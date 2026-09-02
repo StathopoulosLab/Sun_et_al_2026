@@ -1,5 +1,4 @@
 # Sun_et_al_2026
-Udit's + Isacodes
 
 embryo_segmentation_and_expression_analysis_ESEA_V1.m
 Version requirements:
