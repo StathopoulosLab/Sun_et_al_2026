@@ -19,5 +19,5 @@ Briefly: This code accepts an image file, converts to uint16 and then accepts a 
 The user then picks the embryo mask and the intensity profiles are generated.
 
 
-Contact
+Contact: imrodrig@caltech.edu
 
