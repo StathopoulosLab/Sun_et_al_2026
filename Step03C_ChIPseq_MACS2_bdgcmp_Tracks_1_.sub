@@ -1,0 +1,407 @@
+#!/bin/bash
+#SBATCH --time=6:00:00
+#SBATCH --job-name=ChIP_MACS2_Tracks
+#SBATCH --nodes=1
+#SBATCH --mem=32G
+#SBATCH --ntasks=8
+#SBATCH --output=ChIP_MACS2Tracks-%J.out
+#SBATCH --error=ChIP_MACS2Tracks-%J.err
+
+
+##### ---- USER CONFIG: edit these two lines for your own environment ---- #####
+PROJECT_DIR="/path/to/your/project"      # replaces old lab-specific data/scripts root
+CONDA_BASE="$(conda info --base)"        # or hardcode e.g. "$HOME/miniconda3"
+##### ------------------------------------------------------------------- #####
+source ${CONDA_BASE}/bin/activate atac_env
+
+###########################
+# MACS2 bdgcmp Track Generation (Paper Method)
+# Uses bdgcmp for cleaner signal tracks
+###########################
+
+###########################
+# Paths
+###########################
+BASE="${PROJECT_DIR}/ChIP_seq/ChIP_data"
+RFPATH="${PROJECT_DIR}/reference_genome/Dm6/"
+OUTPUT_DIR="${BASE}/Output/macs2_bdgcmp_tracks"
+mkdir -p ${OUTPUT_DIR}
+
+# Effective genome size for dm6
+GENOME_SIZE=142573017
+
+###########################
+# Choose BAM source: filtered or original
+###########################
+USE_FILTERED=true  # Set to false to use original BAMs
+
+if [ "$USE_FILTERED" = true ]; then
+    echo "Using FILTERED BAMs (enhanced filtering)"
+    BAM_SUBDIR="mapped_filtered"
+    BAM_SUFFIX="filtered.sorted.bam"
+else
+    echo "Using ORIGINAL BAMs (from Step01)"
+    BAM_SUBDIR="mapped"
+    BAM_SUFFIX="dedup.nochrM.bam"
+fi
+
+###########################
+# Define Sample BAMs
+###########################
+RUNTAB_04="${BASE}/Output/Dm_ChIP_RuntAb_04_i4_IR/${BAM_SUBDIR}/Dm_ChIP_RuntAb_04_i4_IR.${BAM_SUFFIX}"
+RUNTAB_03="${BASE}/Output/Dm_ChIP_RuntAb_03_i19_IR/${BAM_SUBDIR}/Dm_ChIP_RuntAb_03_i19_IR.${BAM_SUFFIX}"
+
+# Define Control BAMs
+if [ "$USE_FILTERED" = true ]; then
+    POOLED_INPUT="${BASE}/Output/pooled_controls_filtered/INPUT_pooled.sorted.bam"
+    IGG="${BASE}/Output/pooled_controls_filtered/IgG.sorted.bam"
+else
+    POOLED_INPUT="${BASE}/Output/pooled_controls/INPUT_pooled.sorted.bam"
+    IGG="${BASE}/Output/Dm_ChIP_IgG_01_i5_IR/mapped/Dm_ChIP_IgG_01_i5_IR.dedup.nochrM.bam"
+fi
+
+###########################
+# Function: Generate MACS2 bdgcmp tracks
+###########################
+generate_macs2_tracks() {
+    CHIP_BAM=$1
+    CONTROL_BAM=$2
+    SAMPLE_NAME=$3
+    CONTROL_NAME=$4
+    
+    WORK_DIR="${OUTPUT_DIR}/${SAMPLE_NAME}_vs_${CONTROL_NAME}_macs2"
+    mkdir -p ${WORK_DIR}
+    
+    echo ""
+    echo "==================================="
+    echo "Generating MACS2 bdgcmp tracks:"
+    echo "  ${SAMPLE_NAME} vs ${CONTROL_NAME}"
+    echo "==================================="
+    
+    # Check if files exist
+    if [ ! -f "${CHIP_BAM}" ]; then
+        echo "  ERROR: ChIP BAM not found: ${CHIP_BAM}"
+        return
+    fi
+    
+    if [ ! -f "${CONTROL_BAM}" ]; then
+        echo "  ERROR: Control BAM not found: ${CONTROL_BAM}"
+        return
+    fi
+    
+    ########################################
+    # STEP 1: MACS2 callpeak with bedGraph output
+    ########################################
+    echo ""
+    echo "STEP 1: Running MACS2 to generate pileup bedGraphs..."
+    
+    macs2 callpeak \
+        -t ${CHIP_BAM} \
+        -c ${CONTROL_BAM} \
+        -f BAMPE \
+        -g dm \
+        -n ${SAMPLE_NAME}_vs_${CONTROL_NAME} \
+        --outdir ${WORK_DIR} \
+        -B \
+        --SPMR \
+        --keep-dup all \
+        -q 0.01 \
+        2> ${WORK_DIR}/macs2_callpeak.log
+    
+    # -B : output bedGraph files
+    # --SPMR : Signal Per Million Reads (for normalization)
+    # This creates: *_treat_pileup.bdg and *_control_lambda.bdg
+    
+    echo "  ✓ MACS2 pileup bedGraphs created"
+    
+    ########################################
+    # STEP 2: Use bdgcmp to generate comparison tracks
+    ########################################
+    echo ""
+    echo "STEP 2: Using MACS2 bdgcmp for signal comparison..."
+    
+    TREAT_BDG="${WORK_DIR}/${SAMPLE_NAME}_vs_${CONTROL_NAME}_treat_pileup.bdg"
+    CTRL_BDG="${WORK_DIR}/${SAMPLE_NAME}_vs_${CONTROL_NAME}_control_lambda.bdg"
+    
+    if [ ! -f "${TREAT_BDG}" ] || [ ! -f "${CTRL_BDG}" ]; then
+        echo "  ERROR: MACS2 bedGraph files not found!"
+        echo "  Expected: ${TREAT_BDG}"
+        echo "  Expected: ${CTRL_BDG}"
+        return
+    fi
+    
+    # 2A. Log2 fold enrichment (FE) track
+    echo "  Generating log2(FE) track..."
+    macs2 bdgcmp \
+        -t ${TREAT_BDG} \
+        -c ${CTRL_BDG} \
+        -o ${WORK_DIR}/${SAMPLE_NAME}_vs_${CONTROL_NAME}_FE.bdg \
+        -m FE \
+        -p 0.00001
+    
+    # 2B. Log likelihood ratio track
+    echo "  Generating logLR track..."
+    macs2 bdgcmp \
+        -t ${TREAT_BDG} \
+        -c ${CTRL_BDG} \
+        -o ${WORK_DIR}/${SAMPLE_NAME}_vs_${CONTROL_NAME}_logLR.bdg \
+        -m logLR \
+        -p 0.00001
+    
+    # 2C. Subtraction track
+    echo "  Generating subtraction track..."
+    macs2 bdgcmp \
+        -t ${TREAT_BDG} \
+        -c ${CTRL_BDG} \
+        -o ${WORK_DIR}/${SAMPLE_NAME}_vs_${CONTROL_NAME}_subtract.bdg \
+        -m subtract
+    
+    # 2D. ppois (-log10 p-value) track
+    echo "  Generating ppois track..."
+    macs2 bdgcmp \
+        -t ${TREAT_BDG} \
+        -c ${CTRL_BDG} \
+        -o ${WORK_DIR}/${SAMPLE_NAME}_vs_${CONTROL_NAME}_ppois.bdg \
+        -m ppois
+    
+    echo "  ✓ All bdgcmp tracks generated"
+    
+    ########################################
+    # STEP 3: Sort bedGraphs
+    ########################################
+    echo ""
+    echo "STEP 3: Sorting bedGraphs..."
+    
+    for bdg in ${WORK_DIR}/*.bdg; do
+        if [ -f "$bdg" ]; then
+            sort -k1,1 -k2,2n $bdg > ${bdg}.sorted
+            mv ${bdg}.sorted $bdg
+        fi
+    done
+    
+    echo "  ✓ bedGraphs sorted"
+    
+    ########################################
+    # STEP 4: Convert to BigWig
+    ########################################
+    echo ""
+    echo "STEP 4: Converting to BigWig format..."
+    
+    # Convert all bdg files to bigWig
+    for bdg in ${WORK_DIR}/${SAMPLE_NAME}_vs_${CONTROL_NAME}_*.bdg; do
+        if [ -f "$bdg" ]; then
+            basename=$(basename $bdg .bdg)
+            bw="${OUTPUT_DIR}/${basename}.bw"
+            
+            bedGraphToBigWig $bdg ${RFPATH}dm6.chrom.sizes $bw
+            echo "    ✓ Created: ${basename}.bw"
+        fi
+    done
+    
+    ########################################
+    # STEP 5: Also create smoothed versions using deepTools
+    ########################################
+    echo ""
+    echo "STEP 5: Creating smoothed CPM tracks with deepTools..."
+    
+    # ChIP CPM track (10bp bins, 100bp smoothing)
+    bamCoverage \
+        -b ${CHIP_BAM} \
+        -of bigwig \
+        -o ${OUTPUT_DIR}/${SAMPLE_NAME}_vs_${CONTROL_NAME}_ChIP_CPM_smooth.bw \
+        --binSize 10 \
+        --smoothLength 100 \
+        --normalizeUsing CPM \
+        --minMappingQuality 30 \
+        -p 8
+    
+    # Control CPM track
+    bamCoverage \
+        -b ${CONTROL_BAM} \
+        -of bigwig \
+        -o ${OUTPUT_DIR}/${SAMPLE_NAME}_vs_${CONTROL_NAME}_Control_CPM_smooth.bw \
+        --binSize 10 \
+        --smoothLength 100 \
+        --normalizeUsing CPM \
+        --minMappingQuality 30 \
+        -p 8
+    
+    echo "  ✓ Smoothed CPM tracks created"
+    
+    echo ""
+    echo "==================================="
+    echo "Completed: ${SAMPLE_NAME} vs ${CONTROL_NAME}"
+    echo "==================================="
+}
+
+###########################
+# Main execution
+###########################
+echo ""
+echo "========================================="
+echo "MACS2 bdgcmp TRACK GENERATION"
+echo "Following Published Paper Method"
+echo "========================================="
+echo ""
+echo "This generates multiple track types:"
+echo "  1. FE (Fold Enrichment) - ChIP/Control ratio"
+echo "  2. logLR (Log Likelihood Ratio) - statistical enrichment"
+echo "  3. subtract - Simple ChIP - Control"
+echo "  4. ppois - Poisson p-value (-log10)"
+echo "  5. CPM smoothed tracks (deepTools)"
+echo ""
+
+###########################
+# Generate tracks for individual replicates
+###########################
+echo ""
+echo "######################################"
+echo "# INDIVIDUAL REPLICATES vs INPUT"
+echo "######################################"
+
+generate_macs2_tracks ${RUNTAB_04} ${POOLED_INPUT} "RuntAb_04" "pooled_INPUT"
+generate_macs2_tracks ${RUNTAB_03} ${POOLED_INPUT} "RuntAb_03" "pooled_INPUT"
+
+###########################
+# Generate tracks vs IgG
+###########################
+if [ -f "${IGG}" ]; then
+    echo ""
+    echo "######################################"
+    echo "# INDIVIDUAL REPLICATES vs IgG"
+    echo "######################################"
+    
+    generate_macs2_tracks ${RUNTAB_04} ${IGG} "RuntAb_04" "IgG"
+    generate_macs2_tracks ${RUNTAB_03} ${IGG} "RuntAb_03" "IgG"
+fi
+
+###########################
+# Merge replicates and generate tracks
+###########################
+echo ""
+echo "######################################"
+echo "# MERGED REPLICATES"
+echo "######################################"
+
+MERGED_DIR="${OUTPUT_DIR}/merged_replicates"
+mkdir -p ${MERGED_DIR}
+
+MERGED_RUNT="${MERGED_DIR}/RuntAb_merged.${BAM_SUFFIX}"
+
+# Merge if needed
+if [ ! -f "${MERGED_RUNT}.bai" ]; then
+    echo "Merging RuntAb replicates..."
+    samtools merge -@ 8 ${MERGED_DIR}/RuntAb_merged_temp.bam ${RUNTAB_04} ${RUNTAB_03}
+    samtools sort -@ 8 -o ${MERGED_RUNT} ${MERGED_DIR}/RuntAb_merged_temp.bam
+    rm ${MERGED_DIR}/RuntAb_merged_temp.bam
+    samtools index ${MERGED_RUNT}
+    echo "  ✓ Merged replicates created"
+else
+    echo "  ✓ Merged replicates already exist"
+fi
+
+# Generate tracks for merged sample
+generate_macs2_tracks ${MERGED_RUNT} ${POOLED_INPUT} "RuntAb_MERGED" "pooled_INPUT"
+
+if [ -f "${IGG}" ]; then
+    generate_macs2_tracks ${MERGED_RUNT} ${IGG} "RuntAb_MERGED" "IgG"
+fi
+
+###########################
+# Summary
+###########################
+echo ""
+echo "========================================="
+echo "TRACK GENERATION COMPLETE!"
+echo "========================================="
+echo ""
+echo "Output directory: ${OUTPUT_DIR}"
+echo ""
+
+# Count files
+TOTAL_FILES=$(find ${OUTPUT_DIR} -name "*.bw" | wc -l)
+echo "Total BigWig files generated: ${TOTAL_FILES}"
+echo ""
+
+echo "========================================="
+echo "TRACK TYPES GENERATED"
+echo "========================================="
+echo ""
+echo "🏆 RECOMMENDED TRACKS (in order):"
+echo ""
+echo "1. *_FE.bw (Fold Enrichment)"
+echo "   → log2(ChIP/Control)"
+echo "   → Most similar to bamCompare log2 ratio"
+echo "   → BEST for visualization"
+echo "   IGV range: -2 to 2 (or 0 to 4 in linear scale)"
+echo ""
+echo "2. *_logLR.bw (Log Likelihood Ratio)"
+echo "   → Statistical enrichment score"
+echo "   → Good for finding confident peaks"
+echo "   → Higher values = more significant"
+echo "   IGV range: 0 to 100 (autoscale)"
+echo ""
+echo "3. *_ppois.bw (Poisson p-value)"
+echo "   → -log10(p-value) enrichment"
+echo "   → Values >10 are highly significant"
+echo "   IGV range: 0 to 50 (autoscale)"
+echo ""
+echo "4. *_subtract.bw (Simple Subtraction)"
+echo "   → ChIP - Control"
+echo "   → Direct signal difference"
+echo "   IGV range: 0 to max (autoscale)"
+echo ""
+echo "5. *_CPM_smooth.bw (deepTools CPM)"
+echo "   → Smoothed CPM tracks (10bp bins, 100bp smoothing)"
+echo "   → Good for comparing across samples"
+echo "   IGV range: 0 to max (autoscale)"
+echo ""
+
+echo "========================================="
+echo "COMPARISON WITH OTHER METHODS"
+echo "========================================="
+echo ""
+echo "You now have tracks from THREE methods:"
+echo ""
+echo "METHOD 1 (Old): bamCompare log2 ratio"
+echo "  Location: enhanced_bigwigs/"
+echo "  Pros: Simple, well-established"
+echo "  Cons: Can be noisy"
+echo ""
+echo "METHOD 2 (New): ATAC-style background normalization"
+echo "  Location: enhanced_tracks_ATACstyle/"
+echo "  Pros: Very clean background, sophisticated"
+echo "  Cons: More complex, less established"
+echo ""
+echo "METHOD 3 (Paper): MACS2 bdgcmp"
+echo "  Location: macs2_bdgcmp_tracks/"
+echo "  Pros: Follows published methods, multiple metrics"
+echo "  Cons: Different interpretation for each track type"
+echo ""
+echo "TRY ALL THREE and see which looks cleanest for your data!"
+echo ""
+
+echo "========================================="
+echo "RECOMMENDED COMPARISON IN IGV"
+echo "========================================="
+echo ""
+echo "Load these tracks and compare at a known Runt target (e.g., eve):"
+echo ""
+echo "Track 1 (Old method):"
+echo "  enhanced_bigwigs/RuntAb_04_vs_pooled_INPUT_log2ratio_smooth.bw"
+echo ""
+echo "Track 2 (ATAC-style):"
+echo "  enhanced_tracks_ATACstyle/RuntAb_04_vs_pooled_INPUT_ChIP_bgNorm_sm100.bw"
+echo ""
+echo "Track 3 (MACS2 FE):"
+echo "  macs2_bdgcmp_tracks/RuntAb_04_vs_pooled_INPUT_FE.bw"
+echo ""
+echo "Track 4 (MACS2 logLR):"
+echo "  macs2_bdgcmp_tracks/RuntAb_04_vs_pooled_INPUT_logLR.bw"
+echo ""
+echo "Which one has the cleanest background?"
+echo "Which one shows the clearest peaks?"
+echo "→ Use that method for your final analysis!"
+echo ""
+
+echo "DONE!"
