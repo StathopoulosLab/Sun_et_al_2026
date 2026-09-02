@@ -1,0 +1,73 @@
+#!/bin/bash
+
+#SBATCH --time=25:00:00
+#SBATCH --job-name=atac-MACS2
+#SBATCH --nodes=1
+#SBATCH --mem=100G
+#SBATCH --ntasks=28
+#SBATCH --output=Macs2_nrw-brd_peaks-%J.out
+#SBATCH --error=Macs2_nrw-brd_peaks-%J.err
+
+# Load environment
+
+##### ---- USER CONFIG: edit these two lines for your own environment ---- #####
+PROJECT_DIR="/path/to/your/project"      # replaces old lab-specific data/scripts root
+CONDA_BASE="$(conda info --base)"        # or hardcode e.g. "$HOME/miniconda3"
+##### ------------------------------------------------------------------- #####
+module load java-jdk
+source ${CONDA_BASE}/bin/activate atac_env
+
+# Input sample name
+BASENAME=$1
+
+# Paths
+BAMPATH="${PROJECT_DIR}/ATAC_seq/ATAC_data/Output/${BASENAME}/mapped/"
+ATAC_OUT="${PROJECT_DIR}/ATAC_seq/ATAC_data/Output/MACS2_peaks-bigwigs/5.25.26"
+mkdir -p "${ATAC_OUT}"
+
+# Suffix mapping
+declare -A BAM_TYPES=(
+    ["q30_openChromatin"]="_q30_openChromatin.bam"
+    ["noq_openChromatin"]="_noq_openChromatin.bam"
+    ["q30_rmdup_noChrM"]="_q30_rmdup.noChrM.bam"
+    ["noq_rmdup_noChrM"]="_noq_rmdup.noChrM.bam"
+)
+
+# Loop and call MACS2 if BAM exists
+for label in "${!BAM_TYPES[@]}"; do
+    SUFFIX="${BAM_TYPES[$label]}"
+    FILE="${BAMPATH}${BASENAME}${SUFFIX}"
+
+    if [[ ! -f "$FILE" ]]; then
+        echo "INFO: Skipping missing file for $label: $FILE"
+        continue
+    fi
+
+    echo "Running MACS2 for $label"
+
+    # Narrow peaks
+    macs2 callpeak \
+        --treatment "$FILE" \
+        --gsize 1.2e8 \
+        --name "${BASENAME}_q0.05_${label}_Macs2_narrow" \
+        --format BAMPE -B \
+        --keep-dup all \
+        --outdir "$ATAC_OUT" \
+        --qvalue 0.05
+
+    # Broad peaks
+    macs2 callpeak \
+        --treatment "$FILE" \
+        --gsize 1.2e8 \
+        --name "${BASENAME}_q0.05_${label}_Macs2_broad" \
+        --format BAMPE -B \
+        --broad \
+        --broad-cutoff 0.05 \
+        --keep-dup all \
+        --outdir "$ATAC_OUT" \
+        --qvalue 0.05
+done
+
+echo "MACS2 peak calling complete for '${BASENAME}'"
+echo "Output saved to: ${ATAC_OUT}"
+

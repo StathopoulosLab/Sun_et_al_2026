@@ -1,0 +1,72 @@
+#!/bin/bash
+
+#SBATCH --time=26:00:00 #walltime
+#SBATCH --job-name=atac-norm ## Name of the job.
+#SBATCH --nodes=1 ## (-N) number of nodes to use
+#SBATCH --ntasks=28 ## (-n) number of tasks to launch
+#SBATCH --mem=64G ## number of cores the job needs
+#SBATCH --output=norm2_ATAC-%J.out ## output log file
+#SBATCH --error=norm2_ATAC-%J.err ## error log file
+
+
+##### ---- USER CONFIG: edit these two lines for your own environment ---- #####
+PROJECT_DIR="/path/to/your/project"      # replaces old lab-specific data/scripts root
+CONDA_BASE="$(conda info --base)"        # or hardcode e.g. "$HOME/miniconda3"
+##### ------------------------------------------------------------------- #####
+source ${CONDA_BASE}/bin/activate atac_env
+
+QFILT=$1
+BASENAME=$2
+
+#Merged
+#INPATH="${PROJECT_DIR}/ATAC_seq/ATAC_data/Output/Merged/"
+INPATH="${PROJECT_DIR}/ATAC_seq/ATAC_data/"
+#INPATH="${PROJECT_DIR}/ATAC_seq/ATAC_data/"
+SCPATH="${PROJECT_DIR}/ATAC_seq/scripts/"
+RFPATH="${PROJECT_DIR}/reference_genome/Dm6/"
+ReFPATH="${PROJECT_DIR}/reference_genome/Drosophila_melanogaster/UCSC/dm6/Sequence/"
+
+BEDPATH="${INPATH}Output/Norm/${BASENAME}/sm100_CPM_tn5c_${QFILT}"
+#${INPATH}Run_Yw_Trip_Scale_norm/${BASENAME}/sm150_CPM_tn5c
+
+#BEDPATH="${INPATH}Output/Merged/Merged_Macs2_05.05.25/${BASENAME}/sm100_CPM_tn5c_${QFILT}"
+
+# Remove overlapping reads in blacklisted regions
+#bedtools intersect -a ${BEDPATH}${BASENAME}_count.bg4 -b ${RFPATH}dm6-blacklist.v2.bed -v > ${BEDPATH}${BASENAME}_blcklistrmv.bed
+
+
+echo "Extending peaks and extracting background regions..."
+
+#Extend peaks and extract background regions
+
+bedtools random -l 150 -seed 1 -n 100000 -g ${RFPATH}dm6.chrom.sizes | bedtools intersect -a - -b <(bedtools slop -b 9925 -i ${BEDPATH}/${BASENAME}_S50000mD50s150fL0.whole.bed -g ${RFPATH}dm6.chrom.sizes) -v | bedtools sort -i - > ${BEDPATH}/${BASENAME}_S50000mD50s150fL0.background.bed
+
+echo "Calculating mean and std of the background noise..."
+
+#Calculate mean and std of the background noise
+
+BASENAME_backgroundscores=$(bedtools intersect -u -a ${BEDPATH}/${BASENAME}_${QFILT}_count.bg4 -b ${BEDPATH}/${BASENAME}_S50000mD50s150fL0.background.bed | awk '{if($4!=0){array1+=1;arrayX+=log($4)/log(2);arrayXsq+=(log($4)/log(2))^2}} END {if(array1!=0){print arrayX/array1" "sqrt(arrayXsq/array1 - arrayX^2/array1^2)}}')
+BASENAME_backgroundmean=$(echo $BASENAME_backgroundscores | cut -d ' ' -f1)
+BASENAME_backgroundstd=$(echo $BASENAME_backgroundscores | cut -d ' ' -f2)
+
+if [ -z "$BASENAME_backgroundmean" ] || [ -z "$BASENAME_backgroundstd" ]
+then
+echo "Unable to calculate background mean or std. Exiting."
+exit 1
+fi
+
+echo "Normalizing ATAC signal..."
+#Normalize ATAC signal
+awk -v backgroundmean=$BASENAME_backgroundmean -v backgroundstd=$BASENAME_backgroundstd '{print $1"\t"$2"\t"$3"\t"2^((log($4)/log(2)-backgroundmean)/backgroundstd)-1}' ${BEDPATH}/${BASENAME}_${QFILT}_count.bg4 > ${BEDPATH}/${BASENAME}_${QFILT}_normalized_sm150_CPM.bg4
+
+echo "Generating BigWig..."
+#Generate Bigwig
+#mkdir -p "${INPATH}Output/Merged/Merged_Macs2_05.05.25/Norm/BigWigs"
+mkdir -p "${INPATH}Output/Norm/BigWigs"
+
+WIG_PATH="${INPATH}Output/Norm/BigWigs/"
+#WIG_PATH="${INPATH}Output/Merged/Merged_Macs2_05.05.25/Norm/BigWigs/"
+chmod 755 "$WIG_PATH"
+
+bedGraphToBigWig ${BEDPATH}/${BASENAME}_${QFILT}_normalized_sm150_CPM.bg4 ${RFPATH}dm6.chrom.sizes ${WIG_PATH}${BASENAME}_${QFILT}_normalized_sm150_CPM.bigWig
+

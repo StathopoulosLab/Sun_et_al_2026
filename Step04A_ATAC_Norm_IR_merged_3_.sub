@@ -1,0 +1,92 @@
+#!/bin/bash
+
+#SBATCH --time=26:00:00 #walltime
+#SBATCH --job-name=Merged_atac-norm      ## Name of the job.
+#SBATCH --nodes=1        ## (-N) number of nodes to use
+#SBATCH --ntasks=28          ## (-n) number of tasks to launch
+#SBATCH --mem=64G    ## number of cores the job needs
+#SBATCH --output=norm_ATAC-%J.out ## output log file
+#SBATCH --error=norm_ATAC-%J.err ## error log file
+
+
+##### ---- USER CONFIG: edit these two lines for your own environment ---- #####
+PROJECT_DIR="/path/to/your/project"      # replaces old lab-specific data/scripts root
+CONDA_BASE="$(conda info --base)"        # or hardcode e.g. "$HOME/miniconda3"
+##### ------------------------------------------------------------------- #####
+source ${CONDA_BASE}/bin/activate atac_env
+
+QFILT=$1
+BASENAME=$2
+
+#Merged
+#INPATH="${PROJECT_DIR}/ATAC_seq/ATAC_data/Output/Merged/"
+INPATH="${PROJECT_DIR}/ATAC_seq/ATAC_data/"
+SCPATH="${PROJECT_DIR}/ATAC_seq/scripts/"
+RFPATH="${PROJECT_DIR}/reference_genome/Dm6/"
+ReFPATH="${PROJECT_DIR}/reference_genome/Drosophila_melanogaster/UCSC/dm6/Sequence/"
+
+mkdir -p "${INPATH}Output/Merged/Merged_Macs2_12.04.25/${BASENAME}/sm100_CPM_tn5c_${QFILT}"
+
+#INDV bams:
+BAMPATH=${INPATH}Output/${BASENAME}/mapped
+BEDPATH=${INPATH}Output/Norm/${BASENAME}/sm150_CPM_tn5c_${QFILT}
+
+#Merged bams:
+#BAMPATH="${PROJECT_DIR}/ATAC_seq/ATAC_data/Output/Merged/Merged_Macs2_05.05.25"
+#BEDPATH="${INPATH}Output/Merged/Merged_Macs2_05.05.25/${BASENAME}/sm100_CPM_tn5c_${QFILT}"
+
+#Load the list of chromosomes needed:
+#chr_drosophila="chr2L chr2R chr3L chr3R chr4 chrX chrY"
+
+#samtool view  -b ${BAMPATH}${BASENAME}_forHmmrATAC_sort.bam ${chr_drosophila} > ${BAMPATH}${BASENAME}_forHmmrATAC_f.bam ;
+
+#samtools sort ${BAMPATH}${BASENAME}_forHmmrATAC_f.bam -o ${BAMPATH}${BASENAME}_forHmmrATAC_fs.bam
+
+#Index Bam
+echo "Indexing Merged Bam.."
+# ${BAMPATH}${BASENAME}_forHmmrATAC_sort.bam
+#samtools index ${BAMPATH}${BASENAME}.bam -o ${BAMPATH}${BASENAME}.bam.bai 
+
+echo "Generating homer tags..."
+# Generate homer tags
+mkdir -p ${BEDPATH}/HomerTags
+
+chmod +776 ${BEDPATH}/HomerTags
+
+makeTagDirectory ${BEDPATH}/HomerTags "${BAMPATH}/${BASENAME}_${QFILT}_rmdup.noChrM.bam" -genome ${ReFPATH}BWAIndex/genome.fa
+
+echo "Calling peaks..."
+# Call peaks
+findPeaks ${BEDPATH}/HomerTags -localSize 50000 -minDist 50 -size 150 -fragLength 0 > ${BEDPATH}/${BASENAME}_S50000mD50s150fL0 2> ${BEDPATH}/${BASENAME}_HOMER.err 
+grep -w "000" ${BEDPATH}/${BASENAME}_S50000mD50s150fL0 | grep "chr" | grep -v "=" | awk '{print $2"\t"$3"\t"$4"\t"$1"\t"225"\t"$5}' | sort -k1,1 -k2n > ${BEDPATH}/${BASENAME}_S50000mD50s150fL0.whole.bed
+
+echo "Removing overlapping reads in blacklisted regions..."
+
+# Remove overlapping reads in blacklisted regions
+bedtools intersect -a ${BEDPATH}/${BASENAME}_S50000mD50s150fL0.whole.bed -b ${RFPATH}dm6-blacklist.v2.bed -v > ${BEDPATH}/${BASENAME}_S50000mD50s150fL0.bed
+
+echo "Generating coverage signal..."
+# Generate coverage signal
+#Runt3_merged_s12-15_Rep1.bam
+#_pooled.bam
+#rmdup.noChrM.bam
+#${BAMPATH}${BASENAME}_forHmmrATAC_sort.bam" 
+#_tn5c_consensus_filtered.bam
+#_tn5c_consensus_open_filtered.bam
+#rmdup.noChrM.bam
+
+bamCoverage -b "${BAMPATH}/${BASENAME}_${QFILT}_rmdup.noChrM.bam" \
+  -of bedgraph \
+  -o "${BEDPATH}/${BASENAME}_${QFILT}_count.bg4" \
+  --binSize 1 \
+  --normalizeUsing CPM \
+  --skipNonCoveredRegions \
+  --smoothLength 150
+
+#Make all files read and writeable
+#1.1494
+cd ${BEDPATH}${BASENAME}
+
+chmod 775 *.bed
+chmod 775 *_S50000mD50s150fL0.*
+chmod 775 *.bg4

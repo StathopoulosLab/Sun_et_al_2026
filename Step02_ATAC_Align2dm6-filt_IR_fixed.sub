@@ -1,0 +1,122 @@
+#!/bin/bash
+#SBATCH --time=25:00:00
+#SBATCH --job-name=atac-Align_Dm6_Filt
+#SBATCH --nodes=1
+#SBATCH --mem=64G
+#SBATCH --ntasks=28
+#SBATCH --output=Align_ATAC-%J.out
+#SBATCH --error=Align_ATAC-%J.err
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=<your_email>@example.edu
+
+# Initialize Conda
+
+##### ---- USER CONFIG: edit these two lines for your own environment ---- #####
+PROJECT_DIR="/path/to/your/project"      # replaces old lab-specific data/scripts root
+CONDA_BASE="$(conda info --base)"        # or hardcode e.g. "$HOME/miniconda3"
+##### ------------------------------------------------------------------- #####
+source ${CONDA_BASE}/etc/profile.d/conda.sh
+conda activate atac_env
+
+INPATH="${PROJECT_DIR}/ATAC_seq/ATAC_data/"
+SCPATH="${PROJECT_DIR}/ATAC_seq/scripts/"
+RFPATH="${PROJECT_DIR}/reference_genome/Drosophila_melanogaster/UCSC/dm6/Sequence/"
+BASENAME=$1
+
+mkdir -p ${INPATH}/Output/${BASENAME}/mapped
+ALN_FQ=${PROJECT_DIR}/ATAC_seq/ATAC_data/Output/${BASENAME}/TrimGalore/
+
+gunzip -f ${ALN_FQ}${BASENAME}_R1_val_1.fq.gz &
+gunzip -f ${ALN_FQ}${BASENAME}_R2_val_2.fq.gz &
+wait
+
+bowtie2 -x ${RFPATH}Bowtie2Index/genome -p 8 --end-to-end --very-sensitive --no-mixed --no-discordant -I 10 -X 700 -1 ${ALN_FQ}${BASENAME}_R1_val_1.fq -2 ${ALN_FQ}${BASENAME}_R2_val_2.fq -S ${INPATH}Output/${BASENAME}/mapped/${BASENAME}_aligned.sam
+echo "Sam file generated"
+
+samtools view -bT ${RFPATH}Bowtie2Index/genome.fa ${INPATH}Output/${BASENAME}/mapped/${BASENAME}_aligned.sam -o ${INPATH}Output/${BASENAME}/mapped/${BASENAME}_aligned.bam
+echo "Bam file generated"
+
+samtools sort ${INPATH}Output/${BASENAME}/mapped/${BASENAME}_aligned.bam -o ${INPATH}Output/${BASENAME}/mapped/${BASENAME}_sorted_aligned.bam
+echo "Bam file sorted"
+
+samtools index ${INPATH}Output/${BASENAME}/mapped/${BASENAME}_sorted_aligned.bam
+echo "Bam file indexed"
+
+# Define file paths with unique variable names
+BAM_SORTED=${INPATH}Output/${BASENAME}/mapped/${BASENAME}_sorted_aligned.bam
+BAM_TN5COR=${INPATH}Output/${BASENAME}/mapped/${BASENAME}_algn_Tn5c.bam
+
+# Step 2. Correct for Tn5 bias
+run_tn5_correction() {
+  local bam_in="$1"
+  local bam_out="$2"
+  samtools view -h "${bam_in}" | \
+   awk 'BEGIN{OFS="\t"} /^@/ {print; next} {
+     if ($2 == 0 || $2 == 256) {$4 += 4}
+     else if ($2 == 16 || $2 == 272) {$4 -= 5}
+     print
+   }' | samtools view -Sb - > "${bam_out}"
+}
+
+run_tn5_correction "${BAM_SORTED}" "${BAM_TN5COR}"
+
+# Sort the corrected BAM
+samtools sort "${BAM_TN5COR}" -o "${BAM_TN5COR%.bam}_sorted.bam"
+mv "${BAM_TN5COR%.bam}_sorted.bam" "${BAM_TN5COR}"
+samtools index "${BAM_TN5COR}"
+
+# Step 3. Blacklist filter
+BLACKLIST="${PROJECT_DIR}/reference_genome/Dm6/dm6-blacklist.v2.bed"
+BAM_BLFLT=${INPATH}Output/${BASENAME}/mapped/${BASENAME}_algn_Tn5c_BlFlt.bam
+
+bedtools intersect -v -abam "${BAM_TN5COR}" -b "${BLACKLIST}" | samtools sort -o "${BAM_BLFLT}"
+samtools index "${BAM_BLFLT}"
+chmod 755 "${BAM_BLFLT}"
+
+# Step 3.2 Quality filter
+BAM_Q30=${INPATH}Output/${BASENAME}/mapped/${BASENAME}_q30_Tn5c_BlFlt.bam
+samtools view -b -q 30 -f 2 -F 256 "${BAM_BLFLT}" > "${BAM_Q30}"
+samtools index "${BAM_Q30}"
+chmod 755 "${BAM_Q30}"
+
+# Step 4. Remove duplicates
+mkdir -p ${INPATH}Output/${BASENAME}/mapped/stats
+STATSOUT=${INPATH}Output/${BASENAME}/mapped/stats/
+OUTDIR2=${INPATH}Output/${BASENAME}/mapped/
+BAM_RMDUP=${OUTDIR2}${BASENAME}_q30_Tn5c_Blflt_rmdup.bam
+
+samtools markdup -r "${BAM_Q30}" "${BAM_RMDUP}"
+samtools index "${BAM_RMDUP}"
+chmod 755 "${BAM_RMDUP}"
+echo "Bam file filtered (q30), sorted, and duplicates removed"
+
+# Generate mapping stats
+STATS_TXT=${STATSOUT}${BASENAME}_mapping.txt
+samtools idxstats "${BAM_BLFLT}" > ${STATS_TXT}
+samtools idxstats "${BAM_RMDUP}" > ${STATSOUT}${BASENAME}_rmdup_mapping.txt
+echo "Mapping statistics generated"
+
+# Remove mitochondrial reads
+chr_drosophila="chr2L chr2R chr3L chr3R chr4 chrX chrY"
+BAM_NOCHRM=${OUTDIR2}${BASENAME}_rmdup_noChrM.bam
+samtools view -b "${BAM_RMDUP}" ${chr_drosophila} > "${BAM_NOCHRM}"
+samtools index "${BAM_NOCHRM}"
+chmod 755 "${BAM_NOCHRM}"
+
+# Generate Statistics
+samtools idxstats "${BAM_BLFLT}" | awk '{s+=$3+$4} END {print "Total\t",s}' >> "${STATS_TXT}"
+samtools idxstats "${BAM_BLFLT}" | awk '{s+=$3} END {print "Mapped\t",s}' >> "${STATS_TXT}"
+samtools idxstats "${BAM_BLFLT}" | awk '{if($1=="chrM") print "chrM\t",$3}' >> "${STATS_TXT}"
+samtools idxstats "${BAM_NOCHRM}" | awk '{s+=$3} END {print "Mapped_rmdup\t",s}' >> "${STATS_TXT}"
+samtools idxstats "${BAM_NOCHRM}" | awk '{s+=$3} END {print "Mapped_rmdup_nochrM\t",s}' >> "${STATS_TXT}"
+echo "Bam filtering statistics generated"
+
+# Generate Filtered OpenChromatin regions
+BAM_OPEN=${OUTDIR2}${BASENAME}_openChromatin.bam
+samtools view -h "${BAM_NOCHRM}" | \
+awk 'BEGIN{OFS="\t"} /^@/ {print; next} {if ($9 <= 98 && $9 >= -98) print}' | \
+samtools view -b - > "${BAM_OPEN}"
+samtools index "${BAM_OPEN}"
+echo "Generated OpenChromatin Bam"
+
+echo "Alignment complete"
