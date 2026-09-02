@@ -1,4 +1,10 @@
 #!/bin/bash
+
+# PIPELINE: ATAC-seq preprocessing (fastq -> bam -> bigwig)
+# STEP: 2 of 4 -- Bowtie2 alignment to dm6
+# PREV:  Step01_ATAC_FastQC_TrimGalore_IR.sub
+# NEXT:  Step03_ATAC_Post-Align2dm6-filt_IR_2_.sub
+# See README_ATAC.md for the full pipeline map.
 #SBATCH --time=25:00:00
 #SBATCH --job-name=atac-Align_Dm6_Filt
 #SBATCH --nodes=1
@@ -73,50 +79,7 @@ bedtools intersect -v -abam "${BAM_TN5COR}" -b "${BLACKLIST}" | samtools sort -o
 samtools index "${BAM_BLFLT}"
 chmod 755 "${BAM_BLFLT}"
 
-# Step 3.2 Quality filter
-BAM_Q30=${INPATH}Output/${BASENAME}/mapped/${BASENAME}_q30_Tn5c_BlFlt.bam
-samtools view -b -q 30 -f 2 -F 256 "${BAM_BLFLT}" > "${BAM_Q30}"
-samtools index "${BAM_Q30}"
-chmod 755 "${BAM_Q30}"
-
-# Step 4. Remove duplicates
-mkdir -p ${INPATH}Output/${BASENAME}/mapped/stats
-STATSOUT=${INPATH}Output/${BASENAME}/mapped/stats/
-OUTDIR2=${INPATH}Output/${BASENAME}/mapped/
-BAM_RMDUP=${OUTDIR2}${BASENAME}_q30_Tn5c_Blflt_rmdup.bam
-
-samtools markdup -r "${BAM_Q30}" "${BAM_RMDUP}"
-samtools index "${BAM_RMDUP}"
-chmod 755 "${BAM_RMDUP}"
-echo "Bam file filtered (q30), sorted, and duplicates removed"
-
-# Generate mapping stats
-STATS_TXT=${STATSOUT}${BASENAME}_mapping.txt
-samtools idxstats "${BAM_BLFLT}" > ${STATS_TXT}
-samtools idxstats "${BAM_RMDUP}" > ${STATSOUT}${BASENAME}_rmdup_mapping.txt
-echo "Mapping statistics generated"
-
-# Remove mitochondrial reads
-chr_drosophila="chr2L chr2R chr3L chr3R chr4 chrX chrY"
-BAM_NOCHRM=${OUTDIR2}${BASENAME}_rmdup_noChrM.bam
-samtools view -b "${BAM_RMDUP}" ${chr_drosophila} > "${BAM_NOCHRM}"
-samtools index "${BAM_NOCHRM}"
-chmod 755 "${BAM_NOCHRM}"
-
-# Generate Statistics
-samtools idxstats "${BAM_BLFLT}" | awk '{s+=$3+$4} END {print "Total\t",s}' >> "${STATS_TXT}"
-samtools idxstats "${BAM_BLFLT}" | awk '{s+=$3} END {print "Mapped\t",s}' >> "${STATS_TXT}"
-samtools idxstats "${BAM_BLFLT}" | awk '{if($1=="chrM") print "chrM\t",$3}' >> "${STATS_TXT}"
-samtools idxstats "${BAM_NOCHRM}" | awk '{s+=$3} END {print "Mapped_rmdup\t",s}' >> "${STATS_TXT}"
-samtools idxstats "${BAM_NOCHRM}" | awk '{s+=$3} END {print "Mapped_rmdup_nochrM\t",s}' >> "${STATS_TXT}"
-echo "Bam filtering statistics generated"
-
-# Generate Filtered OpenChromatin regions
-BAM_OPEN=${OUTDIR2}${BASENAME}_openChromatin.bam
-samtools view -h "${BAM_NOCHRM}" | \
-awk 'BEGIN{OFS="\t"} /^@/ {print; next} {if ($9 <= 98 && $9 >= -98) print}' | \
-samtools view -b - > "${BAM_OPEN}"
-samtools index "${BAM_OPEN}"
-echo "Generated OpenChromatin Bam"
+# Duplicate removal, chrM removal, and open-chromatin extraction happen in
+# Step03_ATAC_Post-Align2dm6-filt_IR_2_.sub, run on this blacklist-filtered BAM.
 
 echo "Alignment complete"

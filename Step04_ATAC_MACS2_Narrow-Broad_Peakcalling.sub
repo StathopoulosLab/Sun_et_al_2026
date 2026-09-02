@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# PIPELINE: ATAC-seq preprocessing (fastq -> bam -> bigwig)
+# STEP: 4 of 4, PEAKS BRANCH -- MACS2 narrow/broad peak calling on filtered BAMs
+# PREV:  Step03_ATAC_Post-Align2dm6-filt_IR_2_.sub
+# Parallel to the bigwig branch (Step04A/Step04B) -- not required for bigwig generation.
+# See README_ATAC.md for the full pipeline map.
+
 #SBATCH --time=25:00:00
 #SBATCH --job-name=atac-MACS2
 #SBATCH --nodes=1
@@ -25,11 +31,9 @@ BAMPATH="${PROJECT_DIR}/ATAC_seq/ATAC_data/Output/${BASENAME}/mapped/"
 ATAC_OUT="${PROJECT_DIR}/ATAC_seq/ATAC_data/Output/MACS2_peaks-bigwigs/5.25.26"
 mkdir -p "${ATAC_OUT}"
 
-# Suffix mapping
+# Suffix mapping (unfiltered "noq" BAMs only -- this is the only variant we deposit/report)
 declare -A BAM_TYPES=(
-    ["q30_openChromatin"]="_q30_openChromatin.bam"
     ["noq_openChromatin"]="_noq_openChromatin.bam"
-    ["q30_rmdup_noChrM"]="_q30_rmdup.noChrM.bam"
     ["noq_rmdup_noChrM"]="_noq_rmdup.noChrM.bam"
 )
 

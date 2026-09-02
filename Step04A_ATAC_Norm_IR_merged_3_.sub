@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# PIPELINE: ATAC-seq preprocessing (fastq -> bam -> bigwig)
+# STEP: 4A of 4, BIGWIG BRANCH -- bamCoverage CPM-normalized bedgraph generation
+# PREV:  Step03_ATAC_Post-Align2dm6-filt_IR_2_.sub
+# NEXT:  Step04B_ATAC_Norm2_IR_merged_3_.sub
+# See README_ATAC.md for the full pipeline map.
+
 #SBATCH --time=26:00:00 #walltime
 #SBATCH --job-name=Merged_atac-norm      ## Name of the job.
 #SBATCH --nodes=1        ## (-N) number of nodes to use
@@ -15,8 +21,8 @@ CONDA_BASE="$(conda info --base)"        # or hardcode e.g. "$HOME/miniconda3"
 ##### ------------------------------------------------------------------- #####
 source ${CONDA_BASE}/bin/activate atac_env
 
-QFILT=$1
-BASENAME=$2
+QFILT="noq"     # unfiltered BAMs -- this is the only variant we deposit/report
+BASENAME=$1
 
 #Merged
 #INPATH="${PROJECT_DIR}/ATAC_seq/ATAC_data/Output/Merged/"

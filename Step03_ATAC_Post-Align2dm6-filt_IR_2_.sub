@@ -1,5 +1,12 @@
 #!/bin/bash
 
+# PIPELINE: ATAC-seq preprocessing (fastq -> bam -> bigwig)
+# STEP: 3 of 4 -- Post-alignment filtering (fixmate, markdup, blacklist/chrM removal)
+# PREV:  Step02_ATAC_Align2dm6-filt_IR_fixed.sub
+# NEXT:  Step04_ATAC_MACS2_Narrow-Broad_Peakcalling.sub (peaks)
+#        or Step04A_ATAC_Norm_IR_merged_3_.sub (bigwig tracks)
+# See README_ATAC.md for the full pipeline map.
+
 #SBATCH --time=25:00:00
 #SBATCH --job-name=atac-PostAlign_Dm6_Filt
 #SBATCH --nodes=1
@@ -25,29 +32,19 @@ STATSOUT=${OUTDIR}/stats/
 
 mkdir -p "${STATSOUT}"
 
-# Inputs
-BAM_INPUT_Q30="${OUTDIR}${BASENAME}_q30_Tn5c_BlFlt.bam"
+# Input
 BAM_INPUT_NOQ="${OUTDIR}${BASENAME}_algn_Tn5c_BlFlt.bam"
 
 # Step 0: Clean old files if they exist
 echo "Cleaning up any existing old output files..."
 
 files_to_remove=(
-  "${OUTDIR}${BASENAME}_q30_querysorted.bam"
   "${OUTDIR}${BASENAME}_noq_querysorted.bam"
-  "${OUTDIR}${BASENAME}_q30_Tn5c_BlFlt_fixmate.bam"
   "${OUTDIR}${BASENAME}_noq_Tn5c_BlFlt_fixmate.bam"
-  "${OUTDIR}${BASENAME}_q30_Tn5c_BlFlt_rmdup.bam"
   "${OUTDIR}${BASENAME}_noq_Tn5c_BlFlt_rmdup.bam"
-  "${OUTDIR}${BASENAME}_q30_rmdup.noChrM.bam"
   "${OUTDIR}${BASENAME}_noq_rmdup.noChrM.bam"
-  "${OUTDIR}${BASENAME}_q30_openChromatin.bam"
   "${OUTDIR}${BASENAME}_noq_openChromatin.bam"
-  "${OUTDIR}${BASENAME}_q30_openChromatin.bam.bai"
   "${OUTDIR}${BASENAME}_noq_openChromatin.bam.bai"
-  "${STATSOUT}${BASENAME}_q30_mapping.txt"
-  "${STATSOUT}${BASENAME}_q30_rmdup_mapping.txt"
-  "${STATSOUT}${BASENAME}_q30_rmdup_nochrM_mapping.txt"
   "${STATSOUT}${BASENAME}_noq_mapping.txt"
   "${STATSOUT}${BASENAME}_noq_rmdup_mapping.txt"
   "${STATSOUT}${BASENAME}_noq_rmdup_nochrM_mapping.txt"
@@ -63,53 +60,39 @@ done
 echo "Cleanup complete. Proceeding..."
 
 # Step 1: Sort by queryname first!
-echo "Sorting input BAMs by queryname..."
-samtools sort -n "${BAM_INPUT_Q30}" -o "${OUTDIR}${BASENAME}_q30_querysorted.bam"
+echo "Sorting input BAM by queryname..."
 samtools sort -n "${BAM_INPUT_NOQ}" -o "${OUTDIR}${BASENAME}_noq_querysorted.bam"
 
 # Step 2: Fixmate
 echo "Running fixmate..."
-BAM_q30_fixmate="${OUTDIR}${BASENAME}_q30_Tn5c_BlFlt_fixmate.bam"
 BAM_noq_fixmate="${OUTDIR}${BASENAME}_noq_Tn5c_BlFlt_fixmate.bam"
 
-samtools fixmate -m "${OUTDIR}${BASENAME}_q30_querysorted.bam" "${BAM_q30_fixmate}"
 samtools fixmate -m "${OUTDIR}${BASENAME}_noq_querysorted.bam" "${BAM_noq_fixmate}"
 
-# Step 3: Sort fixed BAMs back by coordinates
-echo "Sorting fixmated BAMs by coordinates..."
-samtools sort "${BAM_q30_fixmate}" -o "${BAM_q30_fixmate}"
+# Step 3: Sort fixed BAM back by coordinates
+echo "Sorting fixmated BAM by coordinates..."
 samtools sort "${BAM_noq_fixmate}" -o "${BAM_noq_fixmate}"
 
 # Step 4: Remove duplicates
 echo "Removing duplicates..."
-BAM_q30_rmdup="${OUTDIR}${BASENAME}_q30_Tn5c_BlFlt_rmdup.bam"
 BAM_noq_rmdup="${OUTDIR}${BASENAME}_noq_Tn5c_BlFlt_rmdup.bam"
 
-samtools markdup -r "${BAM_q30_fixmate}" "${BAM_q30_rmdup}"
 samtools markdup -r "${BAM_noq_fixmate}" "${BAM_noq_rmdup}"
 
-samtools index "${BAM_q30_rmdup}"
 samtools index "${BAM_noq_rmdup}"
 
 # Step 5: Remove mitochondrial reads
 echo "Removing mitochondrial reads..."
 chr_drosophila="chr2L chr2R chr3L chr3R chr4 chrX chrY"
 
-BAM_q30_nochrM="${OUTDIR}${BASENAME}_q30_rmdup.noChrM.bam"
 BAM_noq_nochrM="${OUTDIR}${BASENAME}_noq_rmdup.noChrM.bam"
 
-samtools view -b "${BAM_q30_rmdup}" ${chr_drosophila} > "${BAM_q30_nochrM}"
 samtools view -b "${BAM_noq_rmdup}" ${chr_drosophila} > "${BAM_noq_nochrM}"
 
-samtools index "${BAM_q30_nochrM}"
 samtools index "${BAM_noq_nochrM}"
 
 # Step 6: Generate mapping statistics
 echo "Generating mapping statistics..."
-
-samtools idxstats "${BAM_INPUT_Q30}" > "${STATSOUT}${BASENAME}_q30_mapping.txt"
-samtools idxstats "${BAM_q30_rmdup}" > "${STATSOUT}${BASENAME}_q30_rmdup_mapping.txt"
-samtools idxstats "${BAM_q30_nochrM}" > "${STATSOUT}${BASENAME}_q30_rmdup_nochrM_mapping.txt"
 
 samtools idxstats "${BAM_INPUT_NOQ}" > "${STATSOUT}${BASENAME}_noq_mapping.txt"
 samtools idxstats "${BAM_noq_rmdup}" > "${STATSOUT}${BASENAME}_noq_rmdup_mapping.txt"
@@ -118,15 +101,9 @@ samtools idxstats "${BAM_noq_nochrM}" > "${STATSOUT}${BASENAME}_noq_rmdup_nochrM
 # Step 7: Generate Filtered OpenChromatin regions
 echo "Extracting open chromatin regions..."
 
-samtools view -h "${BAM_q30_nochrM}" | \
-awk 'BEGIN{OFS="\t"} /^@/ {print; next} {if ($9 <= 98 && $9 >= -98) print}' | \
-samtools view -b - > "${OUTDIR}${BASENAME}_q30_openChromatin.bam"
-samtools index "${OUTDIR}${BASENAME}_q30_openChromatin.bam"
-
 samtools view -h "${BAM_noq_nochrM}" | \
 awk 'BEGIN{OFS="\t"} /^@/ {print; next} {if ($9 <= 98 && $9 >= -98) print}' | \
 samtools view -b - > "${OUTDIR}${BASENAME}_noq_openChromatin.bam"
 samtools index "${OUTDIR}${BASENAME}_noq_openChromatin.bam"
 
 echo "All processing steps complete!"
-
