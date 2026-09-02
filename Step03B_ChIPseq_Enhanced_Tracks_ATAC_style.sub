@@ -1,0 +1,532 @@
+#!/bin/bash
+#SBATCH --time=8:00:00
+#SBATCH --job-name=ChIP_ATAC_Norm
+#SBATCH --nodes=1
+#SBATCH --mem=64G
+#SBATCH --ntasks=12
+#SBATCH --output=ChIP_ATACNorm-%J.out
+#SBATCH --error=ChIP_ATACNorm-%J.err
+
+
+##### ---- USER CONFIG: edit these two lines for your own environment ---- #####
+PROJECT_DIR="/path/to/your/project"      # replaces old lab-specific data/scripts root
+CONDA_BASE="$(conda info --base)"        # or hardcode e.g. "$HOME/miniconda3"
+##### ------------------------------------------------------------------- #####
+source ${CONDA_BASE}/bin/activate atac_env
+
+###########################
+# IMPROVED ChIP-seq Track Generation
+# Combines ATAC-style background normalization with ChIP-seq best practices
+###########################
+
+###########################
+# Paths
+###########################
+BASE="${PROJECT_DIR}/ChIP_seq/ChIP_data"
+RFPATH="${PROJECT_DIR}/reference_genome/Dm6/"
+OUTPUT_DIR="${BASE}/Output/enhanced_tracks_ATACstyle"
+mkdir -p ${OUTPUT_DIR}
+
+# Effective genome size for dm6
+GENOME_SIZE=142573017
+
+###########################
+# Define Sample BAMs
+###########################
+RUNTAB_04="${BASE}/Output/Dm_ChIP_RuntAb_04_i4_IR/mapped/Dm_ChIP_RuntAb_04_i4_IR.dedup.nochrM.bam"
+RUNTAB_03="${BASE}/Output/Dm_ChIP_RuntAb_03_i19_IR/mapped/Dm_ChIP_RuntAb_03_i19_IR.dedup.nochrM.bam"
+
+# Define Control BAMs
+POOLED_INPUT="${BASE}/Output/pooled_controls/INPUT_pooled.sorted.bam"
+IGG="${BASE}/Output/Dm_ChIP_IgG_01_i5_IR/mapped/Dm_ChIP_IgG_01_i5_IR.dedup.nochrM.bam"
+
+###########################
+# Function: Generate ATAC-style normalized tracks
+###########################
+generate_atac_style_tracks() {
+    CHIP_BAM=$1
+    CONTROL_BAM=$2
+    SAMPLE_NAME=$3
+    CONTROL_NAME=$4
+    PEAK_FILE=$5  # Optional: narrowPeak file for background region generation
+    
+    OUTPUT_PREFIX="${OUTPUT_DIR}/${SAMPLE_NAME}_vs_${CONTROL_NAME}"
+    WORK_DIR="${OUTPUT_DIR}/${SAMPLE_NAME}_vs_${CONTROL_NAME}_work"
+    mkdir -p ${WORK_DIR}
+    
+    echo ""
+    echo "==================================="
+    echo "ATAC-Style Track Generation:"
+    echo "  ${SAMPLE_NAME} vs ${CONTROL_NAME}"
+    echo "==================================="
+    
+    # Check if files exist
+    if [ ! -f "${CHIP_BAM}" ]; then
+        echo "  ERROR: ChIP BAM not found: ${CHIP_BAM}"
+        return
+    fi
+    
+    if [ ! -f "${CONTROL_BAM}" ]; then
+        echo "  ERROR: Control BAM not found: ${CONTROL_BAM}"
+        return
+    fi
+    
+    ########################################
+    # STEP 1: Generate CPM-normalized coverage (like the paper)
+    # Using 10bp bins as in the paper, with smoothing
+    ########################################
+    echo ""
+    echo "STEP 1: Generating CPM-normalized coverage tracks (10bp bins)..."
+    
+    # ChIP track - 10bp bins, CPM normalized, 100bp smoothing
+    bamCoverage \
+        -b ${CHIP_BAM} \
+        -of bedgraph \
+        -o ${WORK_DIR}/${SAMPLE_NAME}_chip_cpm_sm100_bin10.bg \
+        --binSize 10 \
+        --normalizeUsing CPM \
+        --smoothLength 100 \
+        --minMappingQuality 20 \
+        --skipNonCoveredRegions \
+        -p 8
+    
+    echo "  ✓ ChIP CPM track generated"
+    
+    # Control track - 10bp bins, CPM normalized, 100bp smoothing
+    bamCoverage \
+        -b ${CONTROL_BAM} \
+        -of bedgraph \
+        -o ${WORK_DIR}/${SAMPLE_NAME}_control_cpm_sm100_bin10.bg \
+        --binSize 10 \
+        --normalizeUsing CPM \
+        --smoothLength 100 \
+        --minMappingQuality 20 \
+        --skipNonCoveredRegions \
+        -p 8
+    
+    echo "  ✓ Control CPM track generated"
+    
+    ########################################
+    # STEP 2: ATAC-style background normalization
+    ########################################
+    echo ""
+    echo "STEP 2: Calculating background noise statistics..."
+    
+    # Generate background regions (100,000 random 150bp regions, avoiding peaks)
+    if [ -f "${PEAK_FILE}" ] && [ -s "${PEAK_FILE}" ]; then
+        echo "  Using peak file to define background: ${PEAK_FILE}"
+        # Create background regions avoiding peak regions ± ~10kb
+        bedtools random -l 150 -seed 1 -n 100000 -g ${RFPATH}dm6.chrom.sizes \
+            | bedtools intersect -a - -b <(bedtools slop -b 9925 -i ${PEAK_FILE} -g ${RFPATH}dm6.chrom.sizes) -v \
+            | bedtools sort -i - > ${WORK_DIR}/background_regions.bed
+    else
+        echo "  No peak file provided - using genome-wide random regions"
+        bedtools random -l 150 -seed 1 -n 100000 -g ${RFPATH}dm6.chrom.sizes \
+            | bedtools sort -i - > ${WORK_DIR}/background_regions.bed
+    fi
+    
+    # Calculate background statistics for ChIP signal
+    CHIP_bg_scores=$(bedtools intersect -u \
+        -a ${WORK_DIR}/${SAMPLE_NAME}_chip_cpm_sm100_bin10.bg \
+        -b ${WORK_DIR}/background_regions.bed \
+        | awk '{if($4!=0){array1+=1;arrayX+=log($4)/log(2);arrayXsq+=(log($4)/log(2))^2}} END {if(array1!=0){print arrayX/array1" "sqrt(arrayXsq/array1 - arrayX^2/array1^2)}}')
+    
+    CHIP_bg_mean=$(echo $CHIP_bg_scores | cut -d ' ' -f1)
+    CHIP_bg_std=$(echo $CHIP_bg_scores | cut -d ' ' -f2)
+    
+    # Calculate background statistics for Control signal
+    CTRL_bg_scores=$(bedtools intersect -u \
+        -a ${WORK_DIR}/${SAMPLE_NAME}_control_cpm_sm100_bin10.bg \
+        -b ${WORK_DIR}/background_regions.bed \
+        | awk '{if($4!=0){array1+=1;arrayX+=log($4)/log(2);arrayXsq+=(log($4)/log(2))^2}} END {if(array1!=0){print arrayX/array1" "sqrt(arrayXsq/array1 - arrayX^2/array1^2)}}')
+    
+    CTRL_bg_mean=$(echo $CTRL_bg_scores | cut -d ' ' -f1)
+    CTRL_bg_std=$(echo $CTRL_bg_scores | cut -d ' ' -f2)
+    
+    echo "  ChIP background: mean=${CHIP_bg_mean}, std=${CHIP_bg_std}"
+    echo "  Control background: mean=${CTRL_bg_mean}, std=${CTRL_bg_std}"
+    
+    # Check if we got valid stats
+    if [ -z "$CHIP_bg_mean" ] || [ -z "$CHIP_bg_std" ]; then
+        echo "  WARNING: Unable to calculate ChIP background stats, skipping background normalization"
+        SKIP_BG_NORM=true
+    else
+        SKIP_BG_NORM=false
+    fi
+    
+    ########################################
+    # STEP 3: Generate normalized tracks
+    ########################################
+    echo ""
+    echo "STEP 3: Generating background-normalized tracks..."
+    
+    if [ "$SKIP_BG_NORM" = false ]; then
+        # Background-normalized ChIP track (ATAC-style)
+        awk -v bgmean=$CHIP_bg_mean -v bgstd=$CHIP_bg_std \
+            '{print $1"\t"$2"\t"$3"\t"2^((log($4)/log(2)-bgmean)/bgstd)-1}' \
+            ${WORK_DIR}/${SAMPLE_NAME}_chip_cpm_sm100_bin10.bg \
+            > ${WORK_DIR}/${SAMPLE_NAME}_chip_bgnorm.bg
+        
+        # Background-normalized Control track (ATAC-style)
+        awk -v bgmean=$CTRL_bg_mean -v bgstd=$CTRL_bg_std \
+            '{print $1"\t"$2"\t"$3"\t"2^((log($4)/log(2)-bgmean)/bgstd)-1}' \
+            ${WORK_DIR}/${SAMPLE_NAME}_control_cpm_sm100_bin10.bg \
+            > ${WORK_DIR}/${SAMPLE_NAME}_control_bgnorm.bg
+        
+        # Convert to BigWig
+        bedGraphToBigWig ${WORK_DIR}/${SAMPLE_NAME}_chip_bgnorm.bg \
+            ${RFPATH}dm6.chrom.sizes \
+            ${OUTPUT_PREFIX}_ChIP_bgNorm_sm100.bw
+        
+        bedGraphToBigWig ${WORK_DIR}/${SAMPLE_NAME}_control_bgnorm.bg \
+            ${RFPATH}dm6.chrom.sizes \
+            ${OUTPUT_PREFIX}_Control_bgNorm_sm100.bw
+        
+        echo "  ✓ Background-normalized tracks created"
+    fi
+    
+    ########################################
+    # STEP 4: Simple CPM BigWigs (for comparison)
+    ########################################
+    echo ""
+    echo "STEP 4: Converting CPM tracks to BigWig format..."
+    
+    bedGraphToBigWig ${WORK_DIR}/${SAMPLE_NAME}_chip_cpm_sm100_bin10.bg \
+        ${RFPATH}dm6.chrom.sizes \
+        ${OUTPUT_PREFIX}_ChIP_CPM_sm100.bw
+    
+    bedGraphToBigWig ${WORK_DIR}/${SAMPLE_NAME}_control_cpm_sm100_bin10.bg \
+        ${RFPATH}dm6.chrom.sizes \
+        ${OUTPUT_PREFIX}_Control_CPM_sm100.bw
+    
+    echo "  ✓ CPM BigWigs created"
+    
+    ########################################
+    # STEP 5: Log2 ratio tracks (multiple approaches)
+    ########################################
+    echo ""
+    echo "STEP 5: Generating log2 ratio tracks..."
+    
+    # 5A. Standard log2 ratio with readCount normalization (your current method)
+    bamCompare \
+        -b1 ${CHIP_BAM} \
+        -b2 ${CONTROL_BAM} \
+        --operation log2 \
+        --binSize 10 \
+        --smoothLength 100 \
+        --scaleFactorsMethod readCount \
+        --pseudocount 1 \
+        --minMappingQuality 20 \
+        -p 8 \
+        -o ${OUTPUT_PREFIX}_log2ratio_readCount_sm100.bw
+    
+    echo "  ✓ Log2 ratio (readCount) created"
+    
+    # 5B. Log2 ratio with SES normalization (alternative)
+    bamCompare \
+        -b1 ${CHIP_BAM} \
+        -b2 ${CONTROL_BAM} \
+        --operation log2 \
+        --binSize 10 \
+        --smoothLength 100 \
+        --scaleFactorsMethod SES \
+        --pseudocount 1 \
+        --minMappingQuality 20 \
+        -p 8 \
+        -o ${OUTPUT_PREFIX}_log2ratio_SES_sm100.bw
+    
+    echo "  ✓ Log2 ratio (SES) created"
+    
+    # 5C. Publication track - more smoothing (50bp bins, 200bp smoothing)
+    bamCompare \
+        -b1 ${CHIP_BAM} \
+        -b2 ${CONTROL_BAM} \
+        --operation log2 \
+        --binSize 50 \
+        --smoothLength 200 \
+        --scaleFactorsMethod readCount \
+        --pseudocount 1 \
+        --minMappingQuality 20 \
+        -p 8 \
+        -o ${OUTPUT_PREFIX}_log2ratio_publication.bw
+    
+    echo "  ✓ Publication track created"
+    
+    ########################################
+    # STEP 6: Generate subtraction track (CPM-based, like the paper)
+    ########################################
+    echo ""
+    echo "STEP 6: Generating CPM-based subtraction track..."
+    
+    # Use the CPM bedgraphs to create a subtraction track
+    # This is more similar to what the paper describes
+    python3 << 'PYEOF'
+import sys
+
+# Read ChIP CPM
+chip_data = {}
+with open("${WORK_DIR}/${SAMPLE_NAME}_chip_cpm_sm100_bin10.bg") as f:
+    for line in f:
+        if line.startswith('#') or line.strip() == '':
+            continue
+        fields = line.strip().split('\t')
+        if len(fields) < 4:
+            continue
+        chrom, start, end, val = fields[0], int(fields[1]), int(fields[2]), float(fields[3])
+        key = (chrom, start, end)
+        chip_data[key] = val
+
+# Read Control CPM and subtract
+with open("${WORK_DIR}/${SAMPLE_NAME}_control_cpm_sm100_bin10.bg") as ctrl:
+    with open("${WORK_DIR}/${SAMPLE_NAME}_subtract_cpm.bg", "w") as out:
+        for line in ctrl:
+            if line.startswith('#') or line.strip() == '':
+                continue
+            fields = line.strip().split('\t')
+            if len(fields) < 4:
+                continue
+            chrom, start, end, ctrl_val = fields[0], int(fields[1]), int(fields[2]), float(fields[3])
+            key = (chrom, start, end)
+            chip_val = chip_data.get(key, 0.0)
+            subtract_val = chip_val - ctrl_val
+            # Only write if signal is positive (enrichment)
+            if subtract_val > 0:
+                out.write(f"{chrom}\t{start}\t{end}\t{subtract_val:.6f}\n")
+PYEOF
+    
+    # Convert to BigWig
+    bedGraphToBigWig ${WORK_DIR}/${SAMPLE_NAME}_subtract_cpm.bg \
+        ${RFPATH}dm6.chrom.sizes \
+        ${OUTPUT_PREFIX}_subtract_CPM_sm100.bw
+    
+    echo "  ✓ CPM subtraction track created"
+    
+    ########################################
+    # STEP 7: High-resolution track (no smoothing, for detail)
+    ########################################
+    echo ""
+    echo "STEP 7: Generating high-resolution track (no smoothing)..."
+    
+    bamCompare \
+        -b1 ${CHIP_BAM} \
+        -b2 ${CONTROL_BAM} \
+        --operation log2 \
+        --binSize 10 \
+        --scaleFactorsMethod readCount \
+        --pseudocount 1 \
+        --minMappingQuality 20 \
+        -p 8 \
+        -o ${OUTPUT_PREFIX}_log2ratio_hires_nosmooth.bw
+    
+    echo "  ✓ High-resolution track created"
+    
+    echo ""
+    echo "==================================="
+    echo "Completed: ${SAMPLE_NAME} vs ${CONTROL_NAME}"
+    echo "==================================="
+}
+
+###########################
+# Function: Merge replicates and generate tracks
+###########################
+merge_and_generate() {
+    echo ""
+    echo "######################################"
+    echo "# MERGED REPLICATE ANALYSIS"
+    echo "######################################"
+    
+    MERGED_DIR="${OUTPUT_DIR}/merged_replicates"
+    mkdir -p ${MERGED_DIR}
+    
+    MERGED_RUNT="${MERGED_DIR}/RuntAb_merged.bam"
+    
+    # Merge if needed
+    if [ ! -f "${MERGED_RUNT}.bai" ]; then
+        echo "Merging RuntAb replicates..."
+        samtools merge -@ 8 ${MERGED_DIR}/RuntAb_merged_temp.bam ${RUNTAB_04} ${RUNTAB_03}
+        samtools sort -@ 8 -o ${MERGED_RUNT} ${MERGED_DIR}/RuntAb_merged_temp.bam
+        rm ${MERGED_DIR}/RuntAb_merged_temp.bam
+        samtools index ${MERGED_RUNT}
+        echo "  ✓ Merged replicates created"
+    else
+        echo "  ✓ Merged replicates already exist"
+    fi
+    
+    # Generate tracks for merged sample
+    # Use the high-confidence peaks from pooled INPUT for background definition
+    PEAK_FILE="${BASE}/Output/Dm_ChIP_RuntAb_04_i4_IR/peaks_pooled_input/RuntAb_04_vs_pooled_INPUT_q0.01_peaks.filtered.narrowPeak"
+    
+    generate_atac_style_tracks ${MERGED_RUNT} ${POOLED_INPUT} "RuntAb_MERGED" "pooled_INPUT" ${PEAK_FILE}
+}
+
+###########################
+# Main execution
+###########################
+echo ""
+echo "========================================="
+echo "ENHANCED ChIP-seq TRACK GENERATION"
+echo "ATAC-Style Background Normalization"
+echo "========================================="
+echo ""
+echo "This script generates multiple track types:"
+echo "  1. Background-normalized tracks (ATAC-style)"
+echo "  2. CPM-normalized tracks (paper method)"
+echo "  3. Log2 ratio tracks (multiple normalizations)"
+echo "  4. Subtraction tracks"
+echo "  5. High-resolution tracks"
+echo ""
+
+###########################
+# Generate tracks for individual replicates
+###########################
+echo ""
+echo "######################################"
+echo "# INDIVIDUAL REPLICATE TRACKS"
+echo "######################################"
+
+# Get peak files for background definition
+PEAK_04="${BASE}/Output/Dm_ChIP_RuntAb_04_i4_IR/peaks_pooled_input/RuntAb_04_vs_pooled_INPUT_q0.01_peaks.filtered.narrowPeak"
+PEAK_03="${BASE}/Output/Dm_ChIP_RuntAb_03_i19_IR/peaks_pooled_input/RuntAb_03_vs_pooled_INPUT_q0.01_peaks.filtered.narrowPeak"
+
+generate_atac_style_tracks ${RUNTAB_04} ${POOLED_INPUT} "RuntAb_04" "pooled_INPUT" ${PEAK_04}
+generate_atac_style_tracks ${RUNTAB_03} ${POOLED_INPUT} "RuntAb_03" "pooled_INPUT" ${PEAK_03}
+
+# Optional: with IgG control
+if [ -f "${IGG}" ]; then
+    echo ""
+    echo "######################################"
+    echo "# TRACKS vs IgG CONTROL"
+    echo "######################################"
+    
+    generate_atac_style_tracks ${RUNTAB_04} ${IGG} "RuntAb_04" "IgG" ${PEAK_04}
+    generate_atac_style_tracks ${RUNTAB_03} ${IGG} "RuntAb_03" "IgG" ${PEAK_03}
+fi
+
+###########################
+# Generate merged replicate tracks
+###########################
+merge_and_generate
+
+###########################
+# Summary and recommendations
+###########################
+echo ""
+echo "========================================="
+echo "TRACK GENERATION COMPLETE!"
+echo "========================================="
+echo ""
+echo "Output directory: ${OUTPUT_DIR}"
+echo ""
+
+# Count files
+TOTAL_FILES=$(find ${OUTPUT_DIR} -name "*.bw" | wc -l)
+echo "Total BigWig files generated: ${TOTAL_FILES}"
+echo ""
+
+echo "========================================="
+echo "TRACK RECOMMENDATIONS (in order of preference)"
+echo "========================================="
+echo ""
+echo "🏆 BEST FOR VISUALIZATION:"
+echo "   1. *_ChIP_bgNorm_sm100.bw"
+echo "      → ATAC-style background-normalized"
+echo "      → Cleanest signal, minimal noise"
+echo "      → 10bp bins, 100bp smoothing"
+echo "      ⭐⭐⭐ TRY THIS FIRST!"
+echo ""
+echo "   2. *_log2ratio_readCount_sm100.bw"
+echo "      → Standard log2(ChIP/Control)"
+echo "      → readCount normalization"
+echo "      → 10bp bins, 100bp smoothing"
+echo "      ⭐⭐ Your current best method"
+echo ""
+echo "   3. *_subtract_CPM_sm100.bw"
+echo "      → Simple CPM subtraction (like the paper)"
+echo "      → Shows only enrichment"
+echo "      ⭐ Good for finding peaks"
+echo ""
+echo "📊 FOR PUBLICATIONS:"
+echo "   → *_log2ratio_publication.bw"
+echo "      → Extra smoothing (50bp bins, 200bp)"
+echo "      → Clean for figures"
+echo ""
+echo "🔬 FOR DETAILED ANALYSIS:"
+echo "   → *_log2ratio_hires_nosmooth.bw"
+echo "      → No smoothing, 10bp bins"
+echo "      → See fine binding details"
+echo ""
+echo "🎯 HIGHEST SIGNAL-TO-NOISE:"
+echo "   → merged_replicates/RuntAb_MERGED_*.bw"
+echo "      → Combined replicates"
+echo "      → Best for peak finding"
+echo ""
+
+echo "========================================="
+echo "KEY IMPROVEMENTS OVER PREVIOUS METHOD"
+echo "========================================="
+echo ""
+echo "✓ ATAC-style background normalization"
+echo "  - Calculates background noise statistics"
+echo "  - Z-score normalizes signal"
+echo "  - Dramatically reduces noise"
+echo ""
+echo "✓ Smaller bin size (10bp vs 50bp)"
+echo "  - Follows published paper method"
+echo "  - Better resolution for TF binding"
+echo ""
+echo "✓ CPM normalization option"
+echo "  - Matches published paper"
+echo "  - Simpler than RPGC"
+echo "  - More comparable across samples"
+echo ""
+echo "✓ Multiple normalization methods"
+echo "  - Compare readCount vs SES vs CPM"
+echo "  - Find what works best for your data"
+echo ""
+
+echo "========================================="
+echo "IGV VISUALIZATION TIPS"
+echo "========================================="
+echo ""
+echo "For background-normalized tracks (*_bgNorm_*.bw):"
+echo "  Data range: -2 to 10 (or autoscale)"
+echo "  Color: Blue-White-Red heatmap"
+echo ""
+echo "For log2 ratio tracks (*_log2ratio_*.bw):"
+echo "  Data range: -2 to 2 (or -3 to 3 for strong binders)"
+echo "  Color: Blue-White-Red heatmap"
+echo ""
+echo "For CPM/subtract tracks:"
+echo "  Data range: Autoscale or 0 to max"
+echo "  Color: Single color gradient"
+echo ""
+
+echo "========================================="
+echo "COMPARISON WITH OLD METHOD"
+echo "========================================="
+echo ""
+echo "To compare old vs new tracks, load these in IGV:"
+echo ""
+echo "OLD METHOD (from Step03):"
+echo "  ${BASE}/Output/enhanced_bigwigs/RuntAb_04_vs_pooled_INPUT_log2ratio_smooth.bw"
+echo ""
+echo "NEW METHODS (from this script):"
+echo "  1. ${OUTPUT_DIR}/RuntAb_04_vs_pooled_INPUT_ChIP_bgNorm_sm100.bw"
+echo "  2. ${OUTPUT_DIR}/RuntAb_04_vs_pooled_INPUT_log2ratio_readCount_sm100.bw"
+echo "  3. ${OUTPUT_DIR}/RuntAb_04_vs_pooled_INPUT_subtract_CPM_sm100.bw"
+echo ""
+echo "Navigate to a known Runt target (e.g., eve) and compare!"
+echo ""
+
+echo "========================================="
+echo "NEXT STEPS"
+echo "========================================="
+echo ""
+echo "1. Load tracks in IGV"
+echo "2. Navigate to known Runt targets"
+echo "3. Compare background-normalized vs log2 ratio"
+echo "4. Choose your favorite for downstream analysis"
+echo "5. Use merged replicate tracks for peak calling"
+echo ""
+
+echo "DONE!"
