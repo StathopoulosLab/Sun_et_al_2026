@@ -86,7 +86,7 @@ BOTCV_LATE_STAGES <- c("nc14d", "gastr")
 BOTV_LATE_STAGE   <- "nc14d"
 
 # Embryos to exclude (barcode substring matched against column names)
-EXCLUDE_BCS   <- c("bc27")
+EXCLUDE_BCS   <- c("bc27")   # FoxL1_BOTv bc27 — same as Python pipeline
 
 FDR_THRESH    <- 0.05
 LFC_THRESH    <- 0.5   # log2(1.5) — same default as Python script
@@ -219,16 +219,11 @@ strip_prefix <- function(nm) {
 }
 
 # Capture real batch identity BEFORE stripping the sample prefix, while the
-# raw "sample__embryo" names are still intact. get_batch() previously ran
-# on already-stripped bare names (e.g. "FoxL1_BOTv_embryo_bc1"), which no
-# longer contain the "__" separator its own logic depends on — so instead
-# of returning the true sequencing batch (e.g. "28232_28233_..._S1"), it was
-# silently falling through to genotype-name fragments ("FoxL1_BOTv",
-# "HLH54F") for every prior run of this script, not just with set3 data.
-# That made the downstream confound check compare genotype against a proxy
-# that's mostly EQUAL to genotype, which will almost always look
-# "confounded" regardless of whether real technical batch is confounded —
-# silently disabling the batch covariate this script exists to add.
+# raw "sample__embryo" names (e.g. "28232_28233_..._S1__FoxL1_BOTv_embryo_bc1")
+# are still intact — only the prefix carries the true sequencing-batch ID.
+# Bare, already-stripped embryo names carry no batch information, so
+# get_batch() must run on the raw names, not the post-strip ones used
+# everywhere else in this script.
 get_batch <- function(nm) {
   if (grepl("__", nm, fixed=TRUE)) return(sub("__.*", "", nm))
   return("unknown_batch")   # no sample prefix present — shouldn't normally occur
