@@ -1,0 +1,457 @@
+#!/bin/bash
+#SBATCH --time=10:00:00
+#SBATCH --job-name=ChIP_Peak_INPUT_IgG
+#SBATCH --nodes=1
+#SBATCH --mem=64G
+#SBATCH --ntasks=12
+#SBATCH --output=ChIP_PeakBW_All-%J.out
+#SBATCH --error=ChIP_PeakBW_All-%J.err
+#SBATCH --mail-user=<your_email>@example.edu
+#SBATCH --mail-type=END
+
+
+##### ---- USER CONFIG: edit these two lines for your own environment ---- #####
+PROJECT_DIR="/path/to/your/project"      # replaces old lab-specific data/scripts root
+CONDA_BASE="$(conda info --base)"        # or hardcode e.g. "$HOME/miniconda3"
+##### ------------------------------------------------------------------- #####
+source ${CONDA_BASE}/bin/activate atac_env
+
+###########################
+# Paths & Sample Names
+###########################
+BASE="${PROJECT_DIR}/ChIP_seq/ChIP_data"
+
+###########################
+# Define Control Samples
+###########################
+INPUT="${BASE}/Output/Dm_ChIP_D_INPUT_i19_JS/mapped/Dm_ChIP_D_INPUT_i19_JS.dedup.nochrM.bam"
+IGG="${BASE}/Output/Dm_ChIP_D_IgG_i12_JS/mapped/Dm_ChIP_D_IgG_i12_JS.dedup.nochrM.bam"
+
+###########################
+# Index Controls if Needed
+###########################
+echo "Checking and indexing control BAMs..."
+
+if [ ! -f "${INPUT}.bai" ]; then
+    echo "Indexing INPUT control..."
+    samtools index ${INPUT}
+fi
+
+if [ -f "${IGG}" ]; then
+    echo "IgG control found: ${IGG}"
+    if [ ! -f "${IGG}.bai" ]; then
+        echo "Indexing IgG control..."
+        samtools index ${IGG}
+    fi
+    USE_IGG=true
+else
+    echo "WARNING: IgG control not found at ${IGG}"
+    echo "Proceeding with INPUT control only..."
+    USE_IGG=false
+fi
+
+###########################
+# Define ChIP samples
+###########################
+GFPAB_D="${BASE}/Output/Dm_ChIP_D_GFPAb_i6_JS/mapped/Dm_ChIP_D_GFPAb_i6_JS.dedup.nochrM.bam"
+H3K4ME3AB_D="${BASE}/Output/Dm_ChIP_D_H3K4me3Ab_i5_JS/mapped/Dm_ChIP_D_H3K4me3Ab_i5_JS.dedup.nochrM.bam"
+
+# Effective genome size for dm6 (Drosophila)
+GENOME_SIZE=142573017
+
+###########################
+# Helper function: MACS2 with specific stringency
+###########################
+run_macs2_stringency() {
+    CHIP_BAM=$1
+    CONTROL_BAM=$2
+    OUT_DIR=$3
+    BASE_NAME=$4
+    THRESHOLD_TYPE=$5  # "q" or "p"
+    THRESHOLD_VALUE=$6  # e.g., 0.01 or 0.05
+
+    SUFFIX="${THRESHOLD_TYPE}${THRESHOLD_VALUE}"
+    NAME="${BASE_NAME}_${SUFFIX}"
+    
+    echo "Calling peaks for ${NAME}..."
+    
+    # Call narrow peaks with summits
+    if [ "${THRESHOLD_TYPE}" == "q" ]; then
+        macs2 callpeak \
+            -t ${CHIP_BAM} \
+            -c ${CONTROL_BAM} \
+            -f BAMPE \
+            -g dm \
+            -n ${NAME}_narrow \
+            --outdir ${OUT_DIR} \
+            -q ${THRESHOLD_VALUE} \
+            --keep-dup all \
+            --call-summits
+    else  # p-value
+        macs2 callpeak \
+            -t ${CHIP_BAM} \
+            -c ${CONTROL_BAM} \
+            -f BAMPE \
+            -g dm \
+            -n ${NAME}_narrow \
+            --outdir ${OUT_DIR} \
+            -p ${THRESHOLD_VALUE} \
+            --keep-dup all \
+            --call-summits
+    fi
+
+    # Call broad peaks (without summits)
+    if [ "${THRESHOLD_TYPE}" == "q" ]; then
+        macs2 callpeak \
+            -t ${CHIP_BAM} \
+            -c ${CONTROL_BAM} \
+            -f BAMPE \
+            -g dm \
+            -n ${NAME}_broad \
+            --outdir ${OUT_DIR} \
+            -q ${THRESHOLD_VALUE} \
+            --keep-dup all \
+            --broad
+    else  # p-value
+        macs2 callpeak \
+            -t ${CHIP_BAM} \
+            -c ${CONTROL_BAM} \
+            -f BAMPE \
+            -g dm \
+            -n ${NAME}_broad \
+            --outdir ${OUT_DIR} \
+            -p ${THRESHOLD_VALUE} \
+            --keep-dup all \
+            --broad \
+            --broad-cutoff 0.1
+    fi
+
+    # Filter narrow peaks to standard chromosomes
+    if [ -f "${OUT_DIR}/${NAME}_narrow_peaks.narrowPeak" ]; then
+        awk '$1 ~ /^chr(2L|2R|3L|3R|4|X|Y)$/' \
+            ${OUT_DIR}/${NAME}_narrow_peaks.narrowPeak \
+            > ${OUT_DIR}/${NAME}_peaks.filtered.narrowPeak
+        
+        PEAK_COUNT=$(wc -l < ${OUT_DIR}/${NAME}_peaks.filtered.narrowPeak)
+        echo "  ${NAME}: ${PEAK_COUNT} filtered narrow peaks"
+    fi
+    
+    # Filter broad peaks to standard chromosomes
+    if [ -f "${OUT_DIR}/${NAME}_broad_peaks.broadPeak" ]; then
+        awk '$1 ~ /^chr(2L|2R|3L|3R|4|X|Y)$/' \
+            ${OUT_DIR}/${NAME}_broad_peaks.broadPeak \
+            > ${OUT_DIR}/${NAME}_peaks.filtered.broadPeak
+        
+        PEAK_COUNT=$(wc -l < ${OUT_DIR}/${NAME}_peaks.filtered.broadPeak)
+        echo "  ${NAME}: ${PEAK_COUNT} filtered broad peaks"
+    fi
+}
+
+###########################
+# Helper function: Generate BigWig files
+###########################
+generate_bigwigs() {
+    CHIP_BAM=$1
+    CONTROL_BAM=$2
+    OUT_DIR=$3
+    BASE_NAME=$4
+
+    echo "Generating BigWig files for ${BASE_NAME}..."
+    
+    # ChIP BigWigs
+    bamCoverage \
+        -b ${CHIP_BAM} \
+        -o ${OUT_DIR}/${BASE_NAME}_bin10.bw \
+        --binSize 10 \
+        --normalizeUsing RPGC \
+        --effectiveGenomeSize ${GENOME_SIZE} \
+        -p 8
+
+    bamCoverage \
+        -b ${CHIP_BAM} \
+        -o ${OUT_DIR}/${BASE_NAME}_bin50_smooth.bw \
+        --binSize 50 \
+        --smoothLength 150 \
+        --normalizeUsing RPGC \
+        --effectiveGenomeSize ${GENOME_SIZE} \
+        -p 8
+
+    # Control BigWigs
+    bamCoverage \
+        -b ${CONTROL_BAM} \
+        -o ${OUT_DIR}/${BASE_NAME}_control_bin10.bw \
+        --binSize 10 \
+        --normalizeUsing RPGC \
+        --effectiveGenomeSize ${GENOME_SIZE} \
+        -p 8
+
+    bamCoverage \
+        -b ${CONTROL_BAM} \
+        -o ${OUT_DIR}/${BASE_NAME}_control_bin50_smooth.bw \
+        --binSize 50 \
+        --smoothLength 150 \
+        --normalizeUsing RPGC \
+        --effectiveGenomeSize ${GENOME_SIZE} \
+        -p 8
+
+    echo "BigWig generation complete for ${BASE_NAME}"
+}
+
+###########################
+# Main function: Run all stringencies for a sample
+###########################
+run_all_stringencies() {
+    CHIP_BAM=$1
+    CONTROL_BAM=$2
+    OUT_DIR=$3
+    BASE_NAME=$4
+
+    mkdir -p ${OUT_DIR}
+
+    echo "==================================="
+    echo "Processing: ${BASE_NAME}"
+    echo "==================================="
+
+    # Run all 4 stringency levels
+    run_macs2_stringency ${CHIP_BAM} ${CONTROL_BAM} ${OUT_DIR} ${BASE_NAME} "q" 0.01
+    run_macs2_stringency ${CHIP_BAM} ${CONTROL_BAM} ${OUT_DIR} ${BASE_NAME} "q" 0.05
+    run_macs2_stringency ${CHIP_BAM} ${CONTROL_BAM} ${OUT_DIR} ${BASE_NAME} "p" 0.01
+    run_macs2_stringency ${CHIP_BAM} ${CONTROL_BAM} ${OUT_DIR} ${BASE_NAME} "p" 0.05
+
+    # Generate BigWig files once
+    generate_bigwigs ${CHIP_BAM} ${CONTROL_BAM} ${OUT_DIR} ${BASE_NAME}
+
+    echo "==================================="
+    echo "Completed: ${BASE_NAME}"
+    echo "==================================="
+}
+
+###########################
+# Run with INPUT control
+###########################
+echo ""
+echo "####################################################"
+echo "# RUNNING PEAK CALLS WITH INPUT CONTROL"
+echo "####################################################"
+
+run_all_stringencies ${GFPAB_D} ${INPUT} \
+    "${BASE}/Output/Dm_ChIP_D_GFPAb_i6_JS/peaks_INPUT" \
+    "GFPAB_D_vs_INPUT"
+
+run_all_stringencies ${H3K4ME3AB_D} ${INPUT} \
+    "${BASE}/Output/Dm_ChIP_D_H3K4me3Ab_i5_JS/peaks_INPUT" \
+    "H3K4ME3AB_D_vs_INPUT"
+
+###########################
+# Run with IgG control (if available)
+###########################
+if [ "$USE_IGG" = true ]; then
+    echo ""
+    echo "####################################################"
+    echo "# RUNNING PEAK CALLS WITH IgG CONTROL"
+    echo "####################################################"
+    
+    run_all_stringencies ${GFPAB_D} ${IGG} \
+        "${BASE}/Output/Dm_ChIP_D_GFPAb_i6_JS/peaks_IgG" \
+        "GFPAB_D_vs_IgG"
+    
+    run_all_stringencies ${H3K4ME3AB_D} ${IGG} \
+        "${BASE}/Output/Dm_ChIP_D_H3K4me3Ab_i5_JS/peaks_IgG" \
+        "H3K4ME3AB_D_vs_IgG"
+fi
+
+###########################
+# Create Comparison Summary
+###########################
+COMPARISON_DIR="${BASE}/Output/control_comparison"
+mkdir -p ${COMPARISON_DIR}
+
+SUMMARY="${COMPARISON_DIR}/peak_counts_by_control.txt"
+
+echo "Creating comparison summary..."
+echo -e "Sample\tControl_Type\tThreshold\tNarrow_Peaks\tBroad_Peaks" > ${SUMMARY}
+
+# Function to count peaks
+count_peaks() {
+    local SAMPLE=$1
+    local CONTROL=$2
+    local THRESH=$3
+    local PATTERN=$4
+    
+    # Find the directory matching the pattern
+    DIR=$(find ${BASE}/Output -type d -name "*${PATTERN}*" 2>/dev/null | head -n 1)
+    
+    if [ -z "$DIR" ]; then
+        echo -e "${SAMPLE}\t${CONTROL}\t${THRESH}\t0\t0" >> ${SUMMARY}
+        return
+    fi
+    
+    NARROW="${DIR}/${SAMPLE}_vs_${CONTROL}_${THRESH}_peaks.filtered.narrowPeak"
+    BROAD="${DIR}/${SAMPLE}_vs_${CONTROL}_${THRESH}_peaks.filtered.broadPeak"
+    
+    if [ -f "${NARROW}" ]; then
+        N_COUNT=$(wc -l < ${NARROW})
+    else
+        N_COUNT=0
+    fi
+    
+    if [ -f "${BROAD}" ]; then
+        B_COUNT=$(wc -l < ${BROAD})
+    else
+        B_COUNT=0
+    fi
+    
+    echo -e "${SAMPLE}\t${CONTROL}\t${THRESH}\t${N_COUNT}\t${B_COUNT}" >> ${SUMMARY}
+}
+
+# Count peaks for all combinations
+for SAMPLE in "GFPAB_D" "H3K4ME3AB_D"; do
+    for THRESH in "q0.01" "q0.05" "p0.01" "p0.05"; do
+        # INPUT control
+        count_peaks ${SAMPLE} "INPUT" ${THRESH} "peaks_INPUT"
+        
+        # IgG (if exists)
+        if [ "$USE_IGG" = true ]; then
+            count_peaks ${SAMPLE} "IgG" ${THRESH} "peaks_IgG"
+        fi
+    done
+done
+
+echo ""
+echo "========================================="
+echo "PEAK COUNT COMPARISON"
+echo "========================================="
+column -t ${SUMMARY}
+
+###########################
+# Create peak overlap analysis (INPUT vs IgG)
+###########################
+if [ "$USE_IGG" = true ]; then
+    echo ""
+    echo "Creating peak overlap analysis..."
+
+    OVERLAP_DIR="${COMPARISON_DIR}/overlaps"
+    mkdir -p ${OVERLAP_DIR}
+
+    # Function to find overlapping peaks between INPUT and IgG
+    compare_peaks() {
+        local SAMPLE=$1
+        local THRESH=$2
+        
+        echo ""
+        echo "Comparing ${SAMPLE} at ${THRESH} stringency:"
+        
+        # Find directories
+        INPUT_DIR=$(find ${BASE}/Output -type d -name "*${SAMPLE}*peaks_INPUT" 2>/dev/null | head -n 1)
+        IGG_DIR=$(find ${BASE}/Output -type d -name "*${SAMPLE}*peaks_IgG" 2>/dev/null | head -n 1)
+        
+        if [ -z "$INPUT_DIR" ] || [ -z "$IGG_DIR" ]; then
+            echo "  Directories not found, skipping..."
+            return
+        fi
+        
+        INPUT_PEAKS="${INPUT_DIR}/${SAMPLE}_vs_INPUT_${THRESH}_peaks.filtered.narrowPeak"
+        IGG_PEAKS="${IGG_DIR}/${SAMPLE}_vs_IgG_${THRESH}_peaks.filtered.narrowPeak"
+        
+        if [ -f "${INPUT_PEAKS}" ] && [ -f "${IGG_PEAKS}" ]; then
+            # Find overlaps
+            OVERLAP_FILE="${OVERLAP_DIR}/${SAMPLE}_${THRESH}_INPUT_vs_IgG_overlap.bed"
+            bedtools intersect -a ${INPUT_PEAKS} -b ${IGG_PEAKS} -wa > ${OVERLAP_FILE}
+            
+            INPUT_COUNT=$(wc -l < ${INPUT_PEAKS})
+            IGG_COUNT=$(wc -l < ${IGG_PEAKS})
+            OVERLAP_COUNT=$(wc -l < ${OVERLAP_FILE})
+            
+            echo "  INPUT peaks: ${INPUT_COUNT}"
+            echo "  IgG peaks: ${IGG_COUNT}"
+            echo "  Overlapping peaks: ${OVERLAP_COUNT}"
+            
+            # Calculate percentages
+            if [ ${INPUT_COUNT} -gt 0 ]; then
+                OVERLAP_PCT_INPUT=$(awk -v o=${OVERLAP_COUNT} -v p=${INPUT_COUNT} 'BEGIN {printf "%.1f", (o/p)*100}')
+                echo "  ${OVERLAP_PCT_INPUT}% of INPUT peaks also found with IgG"
+            fi
+            
+            if [ ${IGG_COUNT} -gt 0 ]; then
+                OVERLAP_PCT_IGG=$(awk -v o=${OVERLAP_COUNT} -v i=${IGG_COUNT} 'BEGIN {printf "%.1f", (o/i)*100}')
+                echo "  ${OVERLAP_PCT_IGG}% of IgG peaks also found with INPUT"
+            fi
+            
+            # Save high-confidence peaks (found in both)
+            HIGH_CONF="${OVERLAP_DIR}/${SAMPLE}_${THRESH}_high_confidence.bed"
+            cp ${OVERLAP_FILE} ${HIGH_CONF}
+            echo "  High-confidence peaks saved to: ${HIGH_CONF}"
+        else
+            echo "  Peak files not found, skipping..."
+        fi
+    }
+
+    # Compare overlaps for each sample and stringency
+    for SAMPLE in "GFPAB_D" "H3K4ME3AB_D"; do
+        for THRESH in "q0.01" "q0.05" "p0.01" "p0.05"; do
+            compare_peaks ${SAMPLE} ${THRESH}
+        done
+    done
+fi
+
+###########################
+# Final Summary
+###########################
+echo ""
+echo "========================================="
+echo "ALL ANALYSES COMPLETE!"
+echo "========================================="
+echo ""
+echo "Results organized by control type:"
+echo ""
+echo "1. INPUT control:"
+echo "   Output/Dm_ChIP_D_GFPAb_i6_JS/peaks_INPUT/"
+echo "   Output/Dm_ChIP_D_H3K4me3Ab_i5_JS/peaks_INPUT/"
+echo ""
+
+if [ "$USE_IGG" = true ]; then
+    echo "2. IgG control:"
+    echo "   Output/Dm_ChIP_D_GFPAb_i6_JS/peaks_IgG/"
+    echo "   Output/Dm_ChIP_D_H3K4me3Ab_i5_JS/peaks_IgG/"
+    echo ""
+fi
+
+echo "Comparison files:"
+echo "   ${COMPARISON_DIR}/"
+echo "   - peak_counts_by_control.txt (summary table)"
+
+if [ "$USE_IGG" = true ]; then
+    echo "   - overlaps/ (INPUT vs IgG comparisons)"
+fi
+
+echo ""
+echo "For each control type, you have:"
+echo "  - 4 peak stringencies (q0.01, q0.05, p0.01, p0.05)"
+echo "  - BOTH narrow peaks (with summits) AND broad peaks"
+echo "  - 2 BigWig visualizations (bin10, bin50_smooth)"
+echo ""
+
+if [ "$USE_IGG" = true ]; then
+    echo "HIGH-CONFIDENCE PEAKS:"
+    echo "Peaks found in BOTH INPUT and IgG controls are saved in:"
+    echo "   ${OVERLAP_DIR}/*_high_confidence.bed"
+    echo ""
+    echo "These represent your most reliable Runt binding sites!"
+    echo ""
+fi
+
+echo "========================================="
+echo "INTERPRETATION GUIDE:"
+echo "========================================="
+echo "- Narrow peaks: Sharp, precise binding sites"
+echo "- Broad peaks: Extended domains (better for TFs with broad binding)"
+echo "- Compare peak counts across controls"
+echo "- IgG typically gives fewer but more specific peaks"
+echo "- INPUT may capture more open chromatin regions"
+
+if [ "$USE_IGG" = true ]; then
+    echo "- Peaks in both INPUT and IgG = highest confidence"
+fi
+
+echo "- Use the smoothed BigWigs for cleaner visualization"
+echo "========================================="

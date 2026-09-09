@@ -1,0 +1,186 @@
+#!/bin/bash
+#SBATCH --time=4:00:00
+#SBATCH --job-name=ChIP_Enhanced_Filter
+#SBATCH --nodes=1
+#SBATCH --mem=32G
+#SBATCH --ntasks=12
+#SBATCH --output=ChIP_Filter-%J.out
+#SBATCH --error=ChIP_Filter-%J.err
+
+
+##### ---- USER CONFIG: edit these two lines for your own environment ---- #####
+PROJECT_DIR="/path/to/your/project"      # replaces old lab-specific data/scripts root
+CONDA_BASE="$(conda info --base)"        # or hardcode e.g. "$HOME/miniconda3"
+##### ------------------------------------------------------------------- #####
+source ${CONDA_BASE}/bin/activate atac_env
+
+###########################
+# ENHANCED ChIP-seq BAM FILTERING
+# Additional filtering for cleaner tracks
+###########################
+
+SAMPLE=$1  # e.g., "Dm_ChIP_RuntAb_04_i4_IR"
+
+if [ -z "$SAMPLE" ]; then
+    echo "ERROR: Please provide sample name"
+    echo "Usage: sbatch Step01B_ChIPseq_Enhanced_Filtering.sub <SAMPLE_NAME>"
+    echo "Example: sbatch Step01B_ChIPseq_Enhanced_Filtering.sub Dm_ChIP_RuntAb_04_i4_IR"
+    exit 1
+fi
+
+###########################
+# Paths
+###########################
+BASE="${PROJECT_DIR}/ChIP_seq/ChIP_data"
+RFPATH="${PROJECT_DIR}/reference_genome/Dm6/"
+SAMPLE_DIR="${BASE}/Output/${SAMPLE}"
+MAP_DIR="${SAMPLE_DIR}/mapped"
+FILTER_DIR="${SAMPLE_DIR}/mapped_filtered"
+
+mkdir -p ${FILTER_DIR}
+
+###########################
+# Input BAM (from Step01)
+###########################
+INPUT_BAM="${MAP_DIR}/${SAMPLE}.dedup.nochrM.bam"
+
+if [ ! -f "${INPUT_BAM}" ]; then
+    echo "ERROR: Input BAM not found: ${INPUT_BAM}"
+    echo "Please run Step01 first!"
+    exit 1
+fi
+
+echo ""
+echo "========================================="
+echo "ENHANCED BAM FILTERING FOR ChIP-seq"
+echo "Sample: ${SAMPLE}"
+echo "========================================="
+echo ""
+
+###########################
+# STEP 1: Fragment Size Filtering (100-300bp)
+###########################
+echo "STEP 1: Filtering by fragment size (100-300bp for TF ChIP)..."
+
+samtools view -h ${INPUT_BAM} \
+    | awk 'BEGIN{OFS="\t"} 
+           /^@/ {print; next} 
+           {
+               # Calculate fragment size (TLEN field)
+               frag_size = ($9 > 0) ? $9 : -$9
+               # Keep fragments between 100-300bp
+               if (frag_size >= 100 && frag_size <= 300) {
+                   print
+               }
+           }' \
+    | samtools view -b - > ${FILTER_DIR}/${SAMPLE}.fragfilt.bam
+
+echo "  Fragment size filtering complete"
+
+###########################
+# STEP 2: Proper Pair Filtering (flags)
+###########################
+echo ""
+echo "STEP 2: Filtering for properly paired reads..."
+
+samtools view -b -f 2 -F 1804 \
+    ${FILTER_DIR}/${SAMPLE}.fragfilt.bam \
+    > ${FILTER_DIR}/${SAMPLE}.fragfilt.properpair.bam
+
+# Flag explanation:
+# -f 2    : Keep only properly paired reads
+# -F 1804 : Exclude:
+#           - read unmapped (4)
+#           - mate unmapped (8)
+#           - secondary alignment (256)
+#           - read fails platform/vendor quality checks (512)
+#           - read is PCR or optical duplicate (1024)
+
+echo "  Proper pair filtering complete"
+
+###########################
+# STEP 3: Stricter MAPQ Filtering (≥30)
+###########################
+echo ""
+echo "STEP 3: Applying stricter mapping quality filter (MAPQ ≥ 30)..."
+
+samtools view -b -q 30 \
+    ${FILTER_DIR}/${SAMPLE}.fragfilt.properpair.bam \
+    > ${FILTER_DIR}/${SAMPLE}.fragfilt.properpair.q30.bam
+
+echo "  MAPQ filtering complete"
+
+###########################
+# STEP 4: Blacklist Region Removal
+###########################
+echo ""
+echo "STEP 4: Removing blacklisted regions..."
+
+if [ -f "${RFPATH}dm6-blacklist.v2.bed" ]; then
+    bedtools intersect \
+        -v \
+        -a ${FILTER_DIR}/${SAMPLE}.fragfilt.properpair.q30.bam \
+        -b ${RFPATH}dm6-blacklist.v2.bed \
+        > ${FILTER_DIR}/${SAMPLE}.filtered.bam
+    
+    echo "  Blacklist filtering complete"
+else
+    echo "  WARNING: Blacklist file not found, skipping..."
+    cp ${FILTER_DIR}/${SAMPLE}.fragfilt.properpair.q30.bam \
+       ${FILTER_DIR}/${SAMPLE}.filtered.bam
+fi
+
+###########################
+# STEP 5: Sort and Index Final BAM
+###########################
+echo ""
+echo "STEP 5: Sorting and indexing final filtered BAM..."
+
+samtools sort -@ 8 -o ${FILTER_DIR}/${SAMPLE}.filtered.sorted.bam \
+    ${FILTER_DIR}/${SAMPLE}.filtered.bam
+
+samtools index ${FILTER_DIR}/${SAMPLE}.filtered.sorted.bam
+
+# Clean up intermediate files
+rm ${FILTER_DIR}/${SAMPLE}.fragfilt.bam
+rm ${FILTER_DIR}/${SAMPLE}.fragfilt.properpair.bam
+rm ${FILTER_DIR}/${SAMPLE}.fragfilt.properpair.q30.bam
+rm ${FILTER_DIR}/${SAMPLE}.filtered.bam
+
+###########################
+# STEP 6: Generate Statistics
+###########################
+echo ""
+echo "STEP 6: Generating filtering statistics..."
+
+STATS="${FILTER_DIR}/${SAMPLE}.filtering_stats.txt"
+echo "=== Enhanced Filtering Statistics (${SAMPLE}) ===" > ${STATS}
+
+ORIGINAL=$(samtools view -c ${INPUT_BAM})
+FINAL=$(samtools view -c ${FILTER_DIR}/${SAMPLE}.filtered.sorted.bam)
+PERCENT=$(awk -v o=${ORIGINAL} -v f=${FINAL} 'BEGIN {printf "%.1f", (f/o)*100}')
+
+echo -e "Original_reads\t${ORIGINAL}" >> ${STATS}
+echo -e "After_enhanced_filtering\t${FINAL}" >> ${STATS}
+echo -e "Percent_retained\t${PERCENT}%" >> ${STATS}
+
+echo ""
+echo "========================================="
+echo "FILTERING SUMMARY"
+echo "========================================="
+cat ${STATS}
+echo ""
+
+echo "Original BAM: ${INPUT_BAM}"
+echo "Filtered BAM: ${FILTER_DIR}/${SAMPLE}.filtered.sorted.bam"
+echo ""
+
+echo "========================================="
+echo "FILTERING COMPLETE!"
+echo "========================================="
+echo ""
+echo "Next steps:"
+echo "1. Run this script for all samples (both ChIP and controls)"
+echo "2. Use the filtered BAMs for track generation"
+echo "3. Check if tracks are cleaner!"
+echo ""

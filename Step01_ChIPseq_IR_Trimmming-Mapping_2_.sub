@@ -1,0 +1,141 @@
+#!/bin/bash
+#SBATCH --time=6:00:00
+#SBATCH --job-name=ChIP_PE_QC_Trim_Align
+#SBATCH --nodes=1
+#SBATCH --mem=64G
+#SBATCH --ntasks=28
+#SBATCH --output=QC-Trim-Align-%J.out
+#SBATCH --error=QC-Trim-Align-%J.err
+
+
+##### ---- USER CONFIG: edit these two lines for your own environment ---- #####
+PROJECT_DIR="/path/to/your/project"      # replaces old lab-specific data/scripts root
+CONDA_BASE="$(conda info --base)"        # or hardcode e.g. "$HOME/miniconda3"
+##### ------------------------------------------------------------------- #####
+module load java
+source ${CONDA_BASE}/bin/activate atac_env
+
+############################################
+### Input Name
+############################################
+BASENAME=$1
+
+############################################
+### Paths
+############################################
+INPATH="${PROJECT_DIR}/ChIP_seq/ChIP_data"
+OUTDIR0=${INPATH}/Output/${BASENAME}
+FASTQ_DIR="${INPATH}/fastq"
+REF="${PROJECT_DIR}/reference_genome/Drosophila_melanogaster/UCSC/dm6/Sequence/Bowtie2Index/genome"
+
+mkdir -p ${OUTDIR0}
+
+############################################
+### Raw FASTQs
+############################################
+IN_FQ1=${FASTQ_DIR}/${BASENAME}_R1.fastq
+IN_FQ2=${FASTQ_DIR}/${BASENAME}_R2.fastq
+
+############################################
+### FASTQC Pre-trim
+############################################
+PRETRIM_QC=${OUTDIR0}/fastQC/Pre-trim
+mkdir -p ${PRETRIM_QC}
+
+fastqc --nogroup -o ${PRETRIM_QC} -k 6 ${IN_FQ1} ${IN_FQ2}
+
+############################################
+### Trim Galore (Paired-End)
+############################################
+TRIM_DIR=${OUTDIR0}/TrimGalore
+mkdir -p ${TRIM_DIR}
+
+trim_galore \
+    --paired \
+    --phred33 \
+    --fastqc \
+    --cores 28 \
+    --nextseq 4 \
+    --output_dir ${TRIM_DIR} \
+    ${IN_FQ1} ${IN_FQ2}
+
+echo "Trimming complete."
+
+### Identify Trimmed Output (Trim Galore naming convention)
+TRIM_FQ1=${TRIM_DIR}/${BASENAME}_R1_val_1.fq
+TRIM_FQ2=${TRIM_DIR}/${BASENAME}_R2_val_2.fq
+
+############################################
+### Bowtie2 Alignment
+############################################
+MAP_DIR=${OUTDIR0}/mapped
+mkdir -p ${MAP_DIR}
+
+bowtie2 \
+    -x ${REF} \
+    -1 ${TRIM_FQ1} \
+    -2 ${TRIM_FQ2} \
+    -p 28 \
+    -S ${MAP_DIR}/${BASENAME}.sam
+
+echo "Alignment finished."
+
+############################################
+### SAM → BAM → Sort
+############################################
+samtools view -bS ${MAP_DIR}/${BASENAME}.sam \
+    | samtools sort -@ 8 -o ${MAP_DIR}/${BASENAME}.sorted.bam
+
+rm ${MAP_DIR}/${BASENAME}.sam
+
+############################################
+### Mark Duplicates (Modern Method)
+############################################
+# Name sort for fixmate
+samtools sort -n -@ 8 -o ${MAP_DIR}/${BASENAME}.namesorted.bam ${MAP_DIR}/${BASENAME}.sorted.bam
+
+# Fix mate information
+samtools fixmate -m ${MAP_DIR}/${BASENAME}.namesorted.bam ${MAP_DIR}/${BASENAME}.fixmate.bam
+
+# Position sort for markdup
+samtools sort -@ 8 -o ${MAP_DIR}/${BASENAME}.positionsort.bam ${MAP_DIR}/${BASENAME}.fixmate.bam
+
+# Mark/remove duplicates
+samtools markdup -r -@ 8 \
+    ${MAP_DIR}/${BASENAME}.positionsort.bam \
+    ${MAP_DIR}/${BASENAME}.dedup.bam
+
+samtools index ${MAP_DIR}/${BASENAME}.dedup.bam
+
+# Clean up intermediate files
+rm ${MAP_DIR}/${BASENAME}.namesorted.bam ${MAP_DIR}/${BASENAME}.fixmate.bam ${MAP_DIR}/${BASENAME}.positionsort.bam
+
+############################################
+### Remove Mitochondrial Reads
+############################################
+samtools idxstats ${MAP_DIR}/${BASENAME}.dedup.bam | cut -f1 | grep -v chrM |
+    xargs samtools view -b ${MAP_DIR}/${BASENAME}.dedup.bam \
+    > ${MAP_DIR}/${BASENAME}.dedup.nochrM.bam
+
+samtools index ${MAP_DIR}/${BASENAME}.dedup.nochrM.bam
+
+############################################
+### Mapping Statistics
+############################################
+STATS=${MAP_DIR}/${BASENAME}.mapping.txt
+echo -e "=== Mapping Summary (${BASENAME}) ===" > ${STATS}
+
+TOTAL=$(samtools idxstats ${MAP_DIR}/${BASENAME}.sorted.bam | awk '{s+=$3+$4} END{print s}')
+MAPPED=$(samtools idxstats ${MAP_DIR}/${BASENAME}.sorted.bam | awk '{s+=$3} END{print s}')
+DEDUP=$(samtools idxstats ${MAP_DIR}/${BASENAME}.dedup.bam | awk '{s+=$3} END{print s}')
+DEDUP_NOCHRM=$(samtools idxstats ${MAP_DIR}/${BASENAME}.dedup.nochrM.bam | awk '{s+=$3} END{print s}')
+MT_READS=$(samtools idxstats ${MAP_DIR}/${BASENAME}.sorted.bam | awk '$1=="chrM"{print $3}')
+
+echo -e "Total_reads\t${TOTAL}" >> ${STATS}
+echo -e "Mapped_reads\t${MAPPED}" >> ${STATS}
+echo -e "Mitochondrial_reads\t${MT_READS}" >> ${STATS}
+echo -e "Mapped_dedup\t${DEDUP}" >> ${STATS}
+echo -e "Mapped_dedup_noChrM\t${DEDUP_NOCHRM}" >> ${STATS}
+
+echo "ChIP-seq PE processing complete!"
+
