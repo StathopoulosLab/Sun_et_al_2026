@@ -10,13 +10,15 @@ This repository contains the preprocessing and analysis pipelines used to genera
 # Embryo segmentation and expression analysis (MATLAB)
 embryo_segmentation_and_expression_analysis_ESEA_V1.m segments embryos from raw microscopy images and extracts intensity profiles for expression analysis.
 
-embryo_segmentation_and_expression_analysis_ESEA_V1.m
 Version requirements:
-MATLAB: 2021
+MATLAB: 2021; Windows 10
 Data Format:
 tif; lif; czi; mat
+Typical Run time:
+<1 min
 Briefly: This code accepts an image file, converts to uint16 and then accepts a user defined threshold to segment the embryo.
 The user then picks the embryo mask and the intensity profiles are generated.
+Instructions: Instructions to run the code is available in the Methods section as well as code header. 
 
 
 Contact: imrodrig@caltech.edu
