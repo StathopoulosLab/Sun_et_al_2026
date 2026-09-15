@@ -19,6 +19,7 @@ Typical Run time:
 Briefly: This code accepts an image file, converts to uint16 and then accepts a user defined threshold to segment the embryo.
 The user then picks the embryo mask and the intensity profiles are generated.
 Instructions: Instructions to run the code is available in the Methods section as well as code header. 
+Demo Data: ctrl_122.tif
 
 
 Contact: imrodrig@caltech.edu
