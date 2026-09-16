@@ -1357,14 +1357,25 @@ if (3 %in% run_parts) {
               "Emerging"   = "#F39C12",
               "Other"      = "#888888")
 
-            # Compute nice size breaks from actual data range
+            # Compute nice size breaks from actual data range.
+            # FIX: previously a fixed candidate list (1, 1.5, 2, 3) filtered
+            # only by "<= max_nlp" -- when every significant hit has
+            # padj < 0.001 (neg_lp > 3, common for strong, well-powered
+            # enrichments), all candidates pass that filter but fall well
+            # outside ggplot's actual plotted range once every point shares
+            # a similar/high neg_lp, so ggplot silently drops them from
+            # `breaks` while `labels` (built from the same never-filtered
+            # candidate list) keeps its original length -- "breaks and
+            # labels have different lengths". scales::extended_breaks() (the
+            # same general-purpose generator ggplot2's own continuous scales
+            # use internally) computes breaks that always span the real data
+            # range, so this can't happen regardless of how high/tightly-
+            # clustered the significant hits' neg_lp values are.
             max_nlp  <- max(fish_sig$neg_lp, na.rm=TRUE)
-            sz_breaks <- unique(round(c(
-              1,
-              if (max_nlp >= 1.5) 1.5,
-              if (max_nlp >= 2)   2,
-              if (max_nlp >= 3)   3), 1))
-            sz_breaks <- sz_breaks[sz_breaks <= max_nlp]
+            min_nlp  <- min(fish_sig$neg_lp, na.rm=TRUE)
+            sz_breaks <- round(scales::extended_breaks()(c(min_nlp, max_nlp)), 1)
+            sz_breaks <- sz_breaks[sz_breaks > 0]
+            if (length(sz_breaks) == 0) sz_breaks <- round(max_nlp, 1)
 
             p_tdot <- ggplot(fish_sig,
                               aes(x=fate_short,
