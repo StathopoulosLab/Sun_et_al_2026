@@ -1495,19 +1495,22 @@ fate_df <- as.data.frame(ungroup(fate_df))
 # magnitude-shift plots, not further statistical testing), and
 # validation_source (free text -- cite the HCR experiment/figure).
 hcr_validated_loci <- data.frame(
-  chr   = c("chr3R"),
-  start = c(13291398),   # EXTENDED200 merged window (matches the peak that
-  end   = c(13294806),   # showed real signal in coverage tracks/HCR)
-  direction_nc14b = c(lbl_grpB),   # BOTCv-open, per HCR and the consistent-
-                                    # direction limma/DESeq2 point estimates
-  fate  = c("Maintained"),         # same-direction at both timepoints per
-                                    # HCR and available (sub-threshold) ATAC data
-  lfc_nc14b    = c(-0.357040164562197),   # EXTENDED200_limma_BOTv_vs_BOTCv, p=0.0176
-  lfc_nc14late = c(-0.822003471788508),   # NARROW_limma_BOTv_vs_BOTCv_nc14late, p=0.441
-  matched_nc14late = c(TRUE),
-  validation_source = c("HCR-validated (WntD); ATAC signal below standard DAR magnitude threshold (|log2FC|>=0.5) at both timepoints, and DESeq2/limma disagree sharply at nc14b (p=0.018 vs p=0.566) -- included on the basis of independent HCR confirmation, not ATAC statistical significance. See conversation/lab notes for HCR figure reference."),
+  chr   = character(0),
+  start = integer(0),
+  end   = integer(0),
+  direction_nc14b = character(0),
+  fate  = character(0),
+  lfc_nc14b    = numeric(0),
+  lfc_nc14late = numeric(0),
+  matched_nc14late = logical(0),
+  validation_source = character(0),
   stringsAsFactors = FALSE
 )
+# DISABLED (see manuscript decision): previously contained one HCR-validated
+# WntD locus (chr3R:13,291,398-13,294,806) added on independent HCR evidence
+# despite sub-threshold ATAC significance. Left as an empty data frame rather
+# than deleting this block entirely so the allowlist mechanism and its
+# required-columns documentation stay available for a future revision.
 # TODO: fill in a proper HCR figure/experiment reference in validation_source
 # above before this goes into any manuscript-facing output.
 

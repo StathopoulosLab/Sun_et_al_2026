@@ -85,11 +85,10 @@
 #  7. BUG FIX: %||% null-safe accessor
 #  8. BUG FIX: Early return(NULL) when n_total == 0
 #
-# Run from: Enhanced_pseudopink_RuntD7integration/
-# Usage:  source("RERUN_LMM_ONLY_v4.r")
+# Usage:  source("04_mixed_effects_logistic_regression_state_selective_accessibility.r")
 #         # To force rerun specific stems:
 #         # FORCE_RERUN_KEYS <- c("BOTv_vs_BOTCv","BOTv_vs_BOTCv_late",...)
-#         # source("RERUN_LMM_ONLY_v4.r")
+#         # source("04_mixed_effects_logistic_regression_state_selective_accessibility.r")
 ################################################################################
 
 options(stringsAsFactors = FALSE, expressions = 5e5)
@@ -199,9 +198,12 @@ NEGATE_LFC_STEMS <- c("BOTv_vs_BOTCv", "BOTv_vs_BOTCv_nc14late")
 ################################################################################
 
 cat("[1/5] Loading pipeline functions...\n")
-if (file.exists("DAR_ULTIMATE_COMPLETE_LOADER.r")) source("DAR_ULTIMATE_COMPLETE_LOADER.r") else
-  stop("DAR_ULTIMATE_COMPLETE_LOADER.r not found.")
-if (file.exists("DAR_RUNTIME_PATCH.r")) source("DAR_RUNTIME_PATCH.r")
+# NOTE: this script is fully self-contained -- every function it uses
+# (load_dar_bed, run_and_save_lmm, bootstrap_stability_check, etc.) is
+# defined below. It previously sourced DAR_ULTIMATE_COMPLETE_LOADER.r and
+# DAR_RUNTIME_PATCH.r, entry points to a separate, unrelated "Ultimate
+# DAR-Centric Analysis" framework (CRM/motif/co-binding analysis) that
+# this script never actually calls into -- removed as dead code.
 cat("  Done.\n\n")
 
 cat("[2/5] Loading TF partner peaks...\n")
