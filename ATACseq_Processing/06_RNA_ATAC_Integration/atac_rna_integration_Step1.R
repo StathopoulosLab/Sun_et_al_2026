@@ -3,8 +3,10 @@
 # atac_rna_integration_v1.R  v2
 #
 # Three-part ATAC × RNA integration for BOTv vs BOTCv.
-# Run from the ATAC-seq working directory (same level as ATAC_DARS/ and
-# Overview_Plots/). Point DEG_DIR and CLUSTER_DIR at your CEL-Seq2 outputs.
+# Run from the same working directory as Analysis_DEG_LimmaBOTvBOTCv.R (so
+# DEG_DIR below resolves to that script's own output) and one level above
+# ATAC_DARS/ and Overview_Plots/. CLUSTER_DIR still needs pointing at your
+# actual cluster-assignment output (see TODO in CONFIG below).
 #
 # USAGE
 #   Rscript atac_rna_integration_v1.R
@@ -26,7 +28,15 @@ has_tidyr   <- requireNamespace("tidyr",   quietly=TRUE)  # pivot_wider, used by
 
 DAR_DIR     <- "./ATAC_DARS"
 FATE_DIR    <- "./Overview_Plots/peak_fate/BOTv_vs_BOTCv"
-DEG_DIR     <- "../../seRNA-seq_03_19_26/celseq2_pipeline/results/combined_figures/qc_and_deg_botv_botcv/deg_limma"
+# Matches Analysis_DEG_LimmaBOTvBOTCv.R's own default OUT_DIR exactly --
+# run both scripts from the same working directory (or pass --outdir to
+# the DEG script and update this to match) rather than a hardcoded
+# external sibling-folder path, so this resolves for anyone with just
+# this repo, not only on the original analyst's machine.
+DEG_DIR     <- "results/combined_figures/qc_and_deg_botv_botcv/deg_limma"
+# TODO: CLUSTER_DIR still points at an external path -- needs the same
+# treatment once we've confirmed where Analysis_GeneClusters_BOTvBOTCv.py
+# actually writes cluster_assignments.tsv.
 CLUSTER_DIR <- "../../seRNA-seq_03_19_26/celseq2_pipeline/results/combined_figures/explore_clusters_botv_botcv"
 OUT_DIR     <- "./Overview_Plots/atac_rna_integration"
 
