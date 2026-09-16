@@ -1,0 +1,128 @@
+#!/bin/bash
+#SBATCH --time=2:00:00
+#SBATCH --job-name=Merge_Filtered_Controls
+#SBATCH --nodes=1
+#SBATCH --mem=16G
+#SBATCH --ntasks=8
+#SBATCH --output=Merge_Filtered_Controls-%J.out
+#SBATCH --error=Merge_Filtered_Controls-%J.err
+
+
+##### ---- USER CONFIG: edit these two lines for your own environment ---- #####
+PROJECT_DIR="/path/to/your/project"      # replaces old lab-specific data/scripts root
+CONDA_BASE="$(conda info --base)"        # or hardcode e.g. "$HOME/miniconda3"
+##### ------------------------------------------------------------------- #####
+source ${CONDA_BASE}/bin/activate atac_env
+
+###########################
+# Merge Filtered Control BAMs
+###########################
+
+BASE="${PROJECT_DIR}/ChIP_seq/ChIP_data"
+POOLED_DIR="${BASE}/Output/pooled_controls_filtered"
+
+mkdir -p ${POOLED_DIR}
+
+echo ""
+echo "========================================="
+echo "MERGING FILTERED CONTROL BAMs"
+echo "========================================="
+echo ""
+
+###########################
+# Define Filtered Control BAMs
+###########################
+INPUT1="${BASE}/Output/Dm_ChIP_INPUT_01_i18_IR/mapped_filtered/Dm_ChIP_INPUT_01_i18_IR.filtered.sorted.bam"
+INPUT2="${BASE}/Output/Dm_ChIP_INPUT_02_i14_IR/mapped_filtered/Dm_ChIP_INPUT_02_i14_IR.filtered.sorted.bam"
+
+# Check if filtered BAMs exist
+if [ ! -f "${INPUT1}" ]; then
+    echo "ERROR: Filtered INPUT1 not found: ${INPUT1}"
+    echo "Please run Step01B_ChIPseq_Enhanced_Filtering.sub on Dm_ChIP_INPUT_01_i18_IR first!"
+    exit 1
+fi
+
+if [ ! -f "${INPUT2}" ]; then
+    echo "ERROR: Filtered INPUT2 not found: ${INPUT2}"
+    echo "Please run Step01B_ChIPseq_Enhanced_Filtering.sub on Dm_ChIP_INPUT_02_i14_IR first!"
+    exit 1
+fi
+
+###########################
+# 1️⃣ Merge Filtered INPUT BAMs
+###########################
+POOLED_INPUT="${POOLED_DIR}/INPUT_pooled.sorted.bam"
+
+echo "Merging filtered INPUT controls..."
+samtools merge -@ 8 ${POOLED_DIR}/INPUT_pooled_temp.bam ${INPUT1} ${INPUT2}
+
+echo "Sorting merged INPUT..."
+samtools sort -@ 8 -o ${POOLED_INPUT} ${POOLED_DIR}/INPUT_pooled_temp.bam
+
+echo "Indexing merged INPUT..."
+samtools index ${POOLED_INPUT}
+
+# Clean up temp file
+rm ${POOLED_DIR}/INPUT_pooled_temp.bam
+
+echo "  ✓ Filtered pooled INPUT created: ${POOLED_INPUT}"
+
+###########################
+# 2️⃣ Generate Statistics
+###########################
+echo ""
+echo "Generating statistics..."
+
+STATS="${POOLED_DIR}/pooled_INPUT_stats.txt"
+echo "=== Filtered Pooled INPUT Statistics ===" > ${STATS}
+
+INPUT1_COUNT=$(samtools view -c ${INPUT1})
+INPUT2_COUNT=$(samtools view -c ${INPUT2})
+POOLED_COUNT=$(samtools view -c ${POOLED_INPUT})
+
+echo -e "INPUT1_reads\t${INPUT1_COUNT}" >> ${STATS}
+echo -e "INPUT2_reads\t${INPUT2_COUNT}" >> ${STATS}
+echo -e "Pooled_reads\t${POOLED_COUNT}" >> ${STATS}
+
+echo ""
+echo "========================================="
+echo "STATISTICS"
+echo "========================================="
+cat ${STATS}
+
+###########################
+# 3️⃣ Optional: Copy IgG if it exists and is filtered
+###########################
+echo ""
+echo "Checking for filtered IgG control..."
+
+IGG_FILTERED="${BASE}/Output/Dm_ChIP_IgG_01_i5_IR/mapped_filtered/Dm_ChIP_IgG_01_i5_IR.filtered.sorted.bam"
+
+if [ -f "${IGG_FILTERED}" ]; then
+    echo "Found filtered IgG control!"
+    echo "Copying to pooled controls directory for easy access..."
+    
+    cp ${IGG_FILTERED} ${POOLED_DIR}/IgG.sorted.bam
+    cp ${IGG_FILTERED}.bai ${POOLED_DIR}/IgG.sorted.bam.bai
+    
+    IGG_COUNT=$(samtools view -c ${POOLED_DIR}/IgG.sorted.bam)
+    echo -e "IgG_reads\t${IGG_COUNT}" >> ${STATS}
+    
+    echo "  ✓ IgG control copied: ${POOLED_DIR}/IgG.sorted.bam"
+else
+    echo "  Filtered IgG not found (run Step01B on Dm_ChIP_IgG_01_i5_IR if needed)"
+fi
+
+echo ""
+echo "========================================="
+echo "MERGE COMPLETE!"
+echo "========================================="
+echo ""
+echo "Filtered pooled controls saved in:"
+echo "  ${POOLED_DIR}/"
+echo ""
+echo "Files created:"
+ls -lh ${POOLED_DIR}/*.bam
+echo ""
+echo "Use these BAMs for track generation with filtered data!"
+echo ""
