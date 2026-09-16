@@ -1,0 +1,61 @@
+name	log2FoldChange	padj	baseMean	SYMBOL	geneId	annotation
+peak_000	-1.02	0.02	75	gene_000	FBgn0000001	Promoter
+peak_001	0.85	0.02	75	gene_001	FBgn0000002	5' UTR
+peak_002	-1.38	0.02	75	gene_002	FBgn0000003	Distal Intergenic
+peak_003	0.79	0.02	75	gene_003	FBgn0000004	1st Intron
+peak_004	0.98	0.02	75	gene_004	FBgn0000005	Other Exon
+peak_005	1.11	0.02	75	gene_005	FBgn0000006	Downstream
+peak_006	0.65	0.02	75	gene_006	FBgn0000007	3' UTR
+peak_007	1.48	0.02	75	gene_007	FBgn0000008	Promoter
+peak_008	1.17	0.02	75	gene_008	FBgn0000009	5' UTR
+peak_009	-0.79	0.02	75	gene_009	FBgn0000010	Distal Intergenic
+peak_010	-1.72	0.02	75	gene_010	FBgn0000011	1st Intron
+peak_011	1.04	0.02	75	gene_011	FBgn0000012	Other Exon
+peak_012	-1.75	0.02	75	gene_012	FBgn0000013	Downstream
+peak_013	0.64	0.02	75	gene_013	FBgn0000014	3' UTR
+peak_014	-0.96	0.02	75	gene_014	FBgn0000015	Promoter
+peak_015	-1.58	0.02	75	gene_015	FBgn0000016	5' UTR
+peak_016	-1.08	0.02	75	gene_016	FBgn0000017	Distal Intergenic
+peak_017	1.04	0.02	75	gene_017	FBgn0000018	1st Intron
+peak_018	-1.2	0.02	75	gene_018	FBgn0000019	Other Exon
+peak_019	0.62	0.02	75	gene_019	FBgn0000020	Downstream
+peak_020	1.68	0.02	75	gene_020	FBgn0000021	3' UTR
+peak_021	-1.36	0.02	75	gene_021	FBgn0000022	Promoter
+peak_022	-1.58	0.02	75	gene_022	FBgn0000023	5' UTR
+peak_023	-0.82	0.02	75	gene_023	FBgn0000024	Distal Intergenic
+peak_024	1.13	0.02	75	gene_024	FBgn0000025	1st Intron
+peak_025	0.83	0.02	75	gene_025	FBgn0000026	Other Exon
+peak_026	1.53	0.02	75	gene_026	FBgn0000027	Downstream
+peak_027	1.78	0.02	75	gene_027	FBgn0000028	3' UTR
+peak_028	-1.15	0.02	75	gene_028	FBgn0000029	Promoter
+peak_029	0.6	0.02	75	gene_029	FBgn0000030	5' UTR
+peak_030	1.36	0.02	75	gene_030	FBgn0000031	Distal Intergenic
+peak_031	-0.91	0.02	75	gene_031	FBgn0000032	1st Intron
+peak_032	1.48	0.02	75	gene_032	FBgn0000033	Other Exon
+peak_033	1.11	0.02	75	gene_033	FBgn0000034	Downstream
+peak_034	-1.02	0.02	75	gene_034	FBgn0000035	3' UTR
+peak_035	1.73	0.02	75	gene_035	FBgn0000036	Promoter
+peak_036	1.41	0.02	75	gene_036	FBgn0000037	5' UTR
+peak_037	-1.78	0.02	75	gene_037	FBgn0000038	Distal Intergenic
+peak_038	-1.65	0.02	75	gene_038	FBgn0000039	1st Intron
+peak_039	-1.46	0.02	75	gene_039	FBgn0000040	Other Exon
+peak_040	-0.09	0.02	75	gene_040	FBgn0000041	Downstream
+peak_041	0.24	0.02	75	gene_041	FBgn0000042	3' UTR
+peak_042	-0.19	0.02	75	gene_042	FBgn0000043	Promoter
+peak_043	0.28	0.02	75	gene_043	FBgn0000044	5' UTR
+peak_044	-0.17	0.02	75	gene_044	FBgn0000045	Distal Intergenic
+peak_045	0.29	0.02	75	gene_045	FBgn0000046	1st Intron
+peak_046	-0.08	0.02	75	gene_046	FBgn0000047	Other Exon
+peak_047	-0.24	0.02	75	gene_047	FBgn0000048	Downstream
+peak_048	-0.18	0.02	75	gene_048	FBgn0000049	3' UTR
+peak_049	0.26	0.02	75	gene_049	FBgn0000050	Promoter
+peak_050	0.12	0.02	75	gene_050	FBgn0000051	5' UTR
+peak_051	0.16	0.02	75	gene_051	FBgn0000052	Distal Intergenic
+peak_052	-0.13	0.02	75	gene_052	FBgn0000053	1st Intron
+peak_053	-0.11	0.02	75	gene_053	FBgn0000054	Other Exon
+peak_054	-0.07	0.02	75	gene_054	FBgn0000055	Downstream
+peak_055	-0.22	0.02	75	gene_055	FBgn0000056	3' UTR
+peak_056	0.22	0.02	75	gene_056	FBgn0000057	Promoter
+peak_057	-0.29	0.02	75	gene_057	FBgn0000058	5' UTR
+peak_058	-0.29	0.02	75	gene_058	FBgn0000059	Distal Intergenic
+peak_059	-0.26	0.02	75	gene_059	FBgn0000060	1st Intron
